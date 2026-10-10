@@ -48,6 +48,8 @@ Nenhum bug aberto conhecido. Corrigidos durante o desenvolvimento (achados pelos
 - Capa JPG dos cortes não aparecia na galeria (arquivo não liberado no protocolo de mídia).
 - Ferramentas não eram reconsultadas ao mudar o caminho do whisper/FFmpeg.
 - Recusa da IA não era detectada antes de ler o JSON.
+- Publicação: o electron-builder criava releases duplicadas ao enviar arquivos em paralelo (v0.3.1 sem
+  `latest.yml`, v0.3.2 duplicada). Corrigido criando a release como rascunho antes; sobras são apagadas pelo robô.
 
 ## Registro de verificação (2026-10-10, Linux, FFmpeg 6.1.1, Electron 44.7.0)
 
@@ -58,3 +60,5 @@ Nenhum bug aberto conhecido. Corrigidos durante o desenvolvimento (achados pelos
 | `npm run build` | build concluído; Fila/Configurações/Sobre em chunks separados |
 | `xvfb-run -a node tests/e2e/app.e2e.mjs` | **passou**, sem erros no console: importar → analisar (10 pausas, 1 cena) → aprovar sugestão → transcrever (whisper simulado) → buscar → trecho por teclado → exportar 2 cortes TikTok 9:16 com legenda e capa (FFprobe confirmou 1080×1920 + áudio) → XML e EDL → apagar e desfazer → OBS simulado (conectar, marcador em 11 s, importar ao parar) → pasta monitorada → configurações, tema, sobre, diagnóstico |
 | Teste real de atualização (AppImage Linux, servidor local no lugar do GitHub) | app **0.3.1** abriu → em 4 s achou a 0.3.2 → baixou (checksum ok) → contagem de 10 s → `quitAndInstall` → arquivo instalado passou a ser a 0.3.2 (SHA-256 igual ao publicado) → reaberto, registrou “0.3.2 iniciado” e “não há atualização”. A reabertura automática não ocorreu só porque o container não tem FUSE |
+| GitHub Actions — CI (Linux + Windows) | passou: typecheck, 136 testes no Linux e no Windows, E2E no Linux |
+| GitHub Actions — publicação | v0.3.3 publicada com `BigLoop-AutoClips-Setup-0.3.3.exe`, `.blockmap` e `latest.yml`; `releases/latest/download/latest.yml` responde `version: 0.3.3` |
