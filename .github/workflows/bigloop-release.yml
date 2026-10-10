@@ -24,8 +24,8 @@ jobs:
       run:
         working-directory: BigLoop-AutoClips
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -38,6 +38,12 @@ jobs:
       - name: Definir versão
         shell: bash
         run: npm version "0.3.${{ github.run_number }}" --no-git-tag-version
+      - name: Criar etiqueta da versão
+        shell: bash
+        run: |
+          tag="v0.3.${{ github.run_number }}"
+          git tag "$tag"
+          git push origin "$tag"
       - name: Construir instalador e publicar no GitHub Releases
         run: npm run release:win
         env:
