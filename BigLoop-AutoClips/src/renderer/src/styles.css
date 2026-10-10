@@ -256,3 +256,7 @@ code, .mono { font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace; }
 .editor-main > * { flex-shrink: 0; }
 .queue-view label.row { white-space: nowrap; }
 .queue-view label.row select { width: auto; }
+.update-banner { display: flex; gap: 10px; align-items: center; padding: 6px 14px; background: var(--panel-2); border-bottom: 1px solid var(--border); font-size: 13px; }
+.update-banner .progress { max-width: 240px; }
+.update-banner.ready { background: rgba(124, 92, 255, 0.14); border-bottom-color: var(--accent); }
+.update-banner.ready span { flex: 1; }

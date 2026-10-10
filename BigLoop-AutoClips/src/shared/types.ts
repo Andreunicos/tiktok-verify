@@ -286,6 +286,8 @@ export interface AppSettings {
   aiKeyEnc: string
   aiModel: string
   onboardingDone: boolean
+  /** Verifica e instala atualizações sozinho ao abrir o app. */
+  autoUpdate: boolean
 }
 
 export interface ToolInfo {
@@ -326,6 +328,15 @@ export interface AppInfo {
   platform: string
   userData: string
   logPath: string
+}
+
+export interface UpdateStatus {
+  state: 'desativado' | 'parado' | 'verificando' | 'baixando' | 'pronta' | 'atualizado' | 'erro'
+  currentVersion: string
+  newVersion: string | null
+  percent: number
+  error: string | null
+  checkedAt: number | null
 }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string }

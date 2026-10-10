@@ -32,7 +32,8 @@ export function defaultSettings(paths: { outputDir: string }): AppSettings {
     aiEnabled: false,
     aiKeyEnc: '',
     aiModel: '',
-    onboardingDone: false
+    onboardingDone: false,
+    autoUpdate: true
   }
 }
 

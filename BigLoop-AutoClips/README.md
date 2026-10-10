@@ -4,7 +4,7 @@ Aplicativo desktop (Electron + React + TypeScript) que transforma gravações lo
 legendados e prontos para redes sociais. Toda a edição é feita localmente pelo **FFmpeg** — não depende
 do Premiere nem do OBS (os dois são integrações opcionais).
 
-> **Estado:** versão 0.2.0. Funciona e foi testado de ponta a ponta em Linux. **Ainda não foi testado no
+> **Estado:** versão 0.3.x. Funciona e foi testado de ponta a ponta em Linux. **Ainda não foi testado no
 > Windows** — veja [BUGS_E_DECISOES.md](BUGS_E_DECISOES.md) e [docs/MELHORIAS.md](docs/MELHORIAS.md).
 
 ## O que faz
@@ -27,6 +27,23 @@ do Premiere nem do OBS (os dois são integrações opcionais).
   versão local gratuita para títulos e hashtags.
 - Tema claro/escuro, atalhos (`?`), bandeja, notificações, relatório de diagnóstico sem dados pessoais.
 
+## Atualização automática
+
+O app se atualiza sozinho:
+
+1. Cada mudança enviada para o GitHub (branches `main` ou `claude/...`) dispara o robô
+   [`bigloop-release.yml`](../.github/workflows/bigloop-release.yml). Ele roda o typecheck e **todos os testes no
+   Windows**; **só se passarem**, gera o instalador com versão nova (`0.3.<número>`) e publica em
+   [Releases](https://github.com/Andreunicos/tiktok-verify/releases).
+2. Ao abrir (e a cada 4 horas), o app instalado consulta essa página, baixa a versão nova em segundo plano e
+   mostra uma faixa no topo: reinicia sozinho em 10 segundos (botão “Depois” adia). Se houver cortes rodando,
+   instala só quando você fechar o app.
+3. Dá para desligar em **Sobre → Atualizar sozinho** e verificar na mão em **Sobre → Verificar agora**.
+
+A **primeira** instalação é manual: baixe `BigLoop-AutoClips-Setup-<versão>.exe` na página de Releases. Como o
+instalador não é assinado, o Windows mostra “O Windows protegeu o computador” → **Mais informações → Executar
+assim mesmo**. As atualizações seguintes são automáticas.
+
 ## Uso rápido
 
 ```bash
@@ -40,10 +57,11 @@ npm run dev
 |---|---|
 | `npm run dev` | App em modo desenvolvimento |
 | `npm run typecheck` | Verificação de tipos (main/preload e interface) |
-| `npm test` | 131 testes (Vitest), incluindo exportações reais com FFmpeg |
+| `npm test` | 136 testes (Vitest), incluindo exportações reais com FFmpeg |
 | `npm run test:e2e` | Abre o app Electron e percorre o fluxo completo (no Linux sem tela: `xvfb-run -a npm run test:e2e`) |
 | `npm run build` | Build de produção em `out/` |
-| `npm run dist:win` | Instalador NSIS (rodar no Windows) |
+| `npm run dist:win` | Instalador NSIS local, sem publicar (rodar no Windows) |
+| `npm run release:win` | Gera e publica no GitHub Releases (usado pelo robô; precisa de `GH_TOKEN`) |
 
 ## Versões testadas
 

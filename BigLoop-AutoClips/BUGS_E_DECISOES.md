@@ -19,7 +19,11 @@
 | 2026-10-10 | OBS via obs-websocket v5 (pacote `ws`); importação ao receber `OBS_WEBSOCKET_OUTPUT_STOPPED` | Evento oficial de fim de gravação; a pasta monitorada cobre o caso sem OBS conectado |
 | 2026-10-10 | Arquivo “pronto” = tamanho e data estáveis por 2 checagens + abrir para escrita | No Windows o OBS trava o arquivo enquanto grava |
 | 2026-10-10 | Preload com `sandbox: true` | Menor superfície de ataque; o preload só usa `contextBridge`, `ipcRenderer` e `webUtils` |
-| 2026-10-10 | Sem publicação automática, sem apagar originais, sem importar VODs de terceiros | Regra do guia + termos de uso/direitos |
+| 2026-10-10 | Atualização automática com **electron-updater + GitHub Releases** do próprio repositório (público, sem token no app) | Padrão do electron-builder; funciona com instalador NSIS sem assinatura |
+| 2026-10-10 | Versão = `0.3.<número da execução do robô>`; publica a cada push em `main` ou `claude/**` **somente se typecheck e testes passarem no Windows** | O usuário pediu que toda mudança chegue sozinha; os testes impedem que uma versão quebrada seja publicada |
+| 2026-10-10 | Instalação silenciosa, reinício após contagem de 10 s com “Depois”; com cortes rodando, instala só ao fechar | Atualiza rápido sem interromper exportações |
+| 2026-10-10 | Instalador por usuário (`perMachine: false`) | Atualizar sem pedir permissão de administrador |
+| 2026-10-10 | Sem publicação automática de vídeos, sem apagar originais, sem importar VODs de terceiros | Regra do guia + termos de uso/direitos |
 
 ## Limitações conhecidas
 
@@ -30,6 +34,10 @@
 - Modo rápido (cópia) pode começar no keyframe anterior.
 - O player usa o decodificador do Chromium: HEVC ou alguns MKV podem não ter prévia (o corte funciona).
 - Interface só em português.
+- Instalador **não assinado**: o Windows SmartScreen avisa na primeira instalação. As atualizações seguintes
+  não passam pelo SmartScreen, mas também não têm verificação de assinatura (só o checksum SHA-512 do
+  `latest.yml`). Um certificado de assinatura de código resolveria.
+- Toda versão publicada fica pública na página de Releases (o repositório é público).
 - `npm audit` aponta avisos em dependências de **desenvolvimento** (vitest/tinypool, electron-builder);
   não vão para o app instalado. Atualizar o vitest para 4.x resolve parte — pendente.
 
@@ -46,6 +54,7 @@ Nenhum bug aberto conhecido. Corrigidos durante o desenvolvimento (achados pelos
 | Comando | Resultado real |
 |---|---|
 | `npm run typecheck` | sem erros |
-| `npm test` | 12 arquivos, **131 testes, todos passaram** (~45 s; inclui exportações reais com FFmpeg) |
+| `npm test` | 13 arquivos, **136 testes, todos passaram** (~45 s; inclui exportações reais com FFmpeg) |
 | `npm run build` | build concluído; Fila/Configurações/Sobre em chunks separados |
 | `xvfb-run -a node tests/e2e/app.e2e.mjs` | **passou**, sem erros no console: importar → analisar (10 pausas, 1 cena) → aprovar sugestão → transcrever (whisper simulado) → buscar → trecho por teclado → exportar 2 cortes TikTok 9:16 com legenda e capa (FFprobe confirmou 1080×1920 + áudio) → XML e EDL → apagar e desfazer → OBS simulado (conectar, marcador em 11 s, importar ao parar) → pasta monitorada → configurações, tema, sobre, diagnóstico |
+| Teste real de atualização (AppImage Linux, servidor local no lugar do GitHub) | app **0.3.1** abriu → em 4 s achou a 0.3.2 → baixou (checksum ok) → contagem de 10 s → `quitAndInstall` → arquivo instalado passou a ser a 0.3.2 (SHA-256 igual ao publicado) → reaberto, registrou “0.3.2 iniciado” e “não há atualização”. A reabertura automática não ocorreu só porque o container não tem FUSE |

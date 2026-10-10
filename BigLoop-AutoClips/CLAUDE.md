@@ -17,6 +17,12 @@ Inspirado no fluxo do OpusClip — ferramenta própria, sem copiar código de te
 - `npm run build` — build de produção em `out/`
 - `npm run dist:win` — instalador NSIS (rodar no Windows)
 
+## Publicação e atualização automática
+- Todo push em `main` ou `claude/**` que mexa em `BigLoop-AutoClips/` publica uma versão nova no GitHub Releases
+  (se typecheck e testes passarem no Windows) e os apps instalados se atualizam sozinhos.
+- Por isso: só envie código com `npm run typecheck`, `npm test` e o E2E passando. Nunca envie trabalho pela metade.
+- Não mude `build.publish`, `appId` nem o `owner/repo` sem motivo: isso quebra a atualização dos apps já instalados.
+
 ## Regras
 - Não invente resultados de testes. Rode os comandos e relate a saída real.
 - Não apague nem sobrescreva arquivos do usuário sem autorização. O FFmpeg roda com `-n` e o nome de saída ganha sufixo `(2)`, `(3)`…

@@ -1,5 +1,15 @@
 # Instalação
 
+## Jeito mais fácil: instalador
+
+1. Abra https://github.com/Andreunicos/tiktok-verify/releases e baixe o `BigLoop-AutoClips-Setup-<versão>.exe`
+   mais recente.
+2. Execute. O instalador não é assinado: no aviso do Windows clique em **Mais informações → Executar assim mesmo**.
+3. Instale o FFmpeg (abaixo) se ele ainda não estiver no PATH.
+4. Pronto. Daqui em diante o app **se atualiza sozinho** ao abrir.
+
+Para desenvolver ou rodar a partir do código, siga o resto deste guia.
+
 ## Requisitos (Windows 10/11)
 
 - Node.js LTS (testado com 22.x) e npm, Git
@@ -66,8 +76,10 @@ npm run test:e2e
 1. (Opcional) `powershell -ExecutionPolicy Bypass -File scripts\baixar-ffmpeg.ps1` copia o FFmpeg para
    `resources\bin` e ele vai junto no instalador. **Script não testado.** O build baixado é GPL: ao distribuir o
    instalador, cumpra a licença do FFmpeg.
-2. `npm run dist:win` → instalador em `release\`. **Ainda não testado**; sem assinatura digital o Windows
-   mostra o aviso de “editor desconhecido”.
+2. `npm run dist:win` → instalador em `release\` (sem publicar). Sem assinatura digital o Windows mostra o
+   aviso de “editor desconhecido”.
+3. A publicação oficial é feita pelo robô do GitHub (`.github/workflows/bigloop-release.yml`) a cada mudança.
+   O instalador é por usuário (não pede administrador), o que permite atualizar sem pedir permissão.
 
 ## Onde ficam dados e logs
 

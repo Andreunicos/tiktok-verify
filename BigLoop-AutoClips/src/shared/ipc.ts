@@ -38,6 +38,9 @@ export const IPC = {
   showInFolder: 'shell:show-in-folder',
   openExternal: 'shell:open-external',
   diagnostics: 'app:diagnostics',
+  updateStatus: 'update:status',
+  checkUpdates: 'update:check',
+  installUpdate: 'update:install',
   // eventos main → renderer
   evQueue: 'ev:queue',
   evJobProgress: 'ev:job-progress',
@@ -45,5 +48,6 @@ export const IPC = {
   evObs: 'ev:obs',
   evWatch: 'ev:watch',
   evLibrary: 'ev:library',
-  evShortcut: 'ev:shortcut'
+  evShortcut: 'ev:shortcut',
+  evUpdate: 'ev:update'
 } as const

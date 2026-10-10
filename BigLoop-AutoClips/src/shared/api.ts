@@ -15,6 +15,7 @@ import type {
   SuggestionOptions,
   ToolStatus,
   Transcript,
+  UpdateStatus,
   WatchStatus
 } from './types'
 
@@ -83,6 +84,10 @@ export interface BigLoopApi {
   showInFolder(path: string): Promise<void>
   openExternal(url: string): Promise<void>
   diagnostics(): Promise<string>
+  // Atualizações
+  updateStatus(): Promise<UpdateStatus>
+  checkUpdates(): Promise<UpdateStatus>
+  installUpdate(): Promise<boolean>
   // Eventos
   onQueue(cb: (s: QueueState) => void): () => void
   onJobProgress(cb: (j: Job) => void): () => void
@@ -91,4 +96,5 @@ export interface BigLoopApi {
   onWatchStatus(cb: (s: WatchStatus) => void): () => void
   onLibraryChanged(cb: (info: { projectId: string; reason: 'pasta' | 'obs' | 'marcador' }) => void): () => void
   onShortcut(cb: (action: 'marker') => void): () => void
+  onUpdate(cb: (s: UpdateStatus) => void): () => void
 }

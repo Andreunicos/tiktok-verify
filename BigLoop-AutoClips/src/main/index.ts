@@ -24,6 +24,7 @@ import { IPC } from '../shared/ipc'
 import { formatSrt, formatVtt, parseSubtitles } from '../shared/subtitles'
 import { learnWeights, suggestClips } from '../shared/suggest'
 import type { AppSettings, CutRequest, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
+import { autoUpdater } from 'electron-updater'
 import { AiError, generateSocialCopy, translateCues } from './ai'
 import { redact } from './diagnostics'
 import { readJson, writeJsonAtomic } from './jsonFile'
@@ -38,6 +39,7 @@ import { ObsManager } from './obs'
 import { ProjectStore } from './projects'
 import { JobQueue } from './queue'
 import { defaultSettings, SettingsStore } from './settings'
+import { UpdateController, type UpdaterLike } from './updater'
 import { FolderWatcher, VIDEO_EXTENSIONS } from './watcher'
 
 registerMediaSchemePrivileges()
@@ -54,6 +56,8 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
 let hwEncoders: VideoEncoder[] | null = null
+let updates: UpdateController
+const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
 const tasks = new Map<string, AbortController>()
 const watchState: WatchStatus = { enabled: false, dir: '', pending: [], lastImported: null, error: null }
 
@@ -361,6 +365,33 @@ function setupObs(): void {
   if (settings.get().obsEnabled) obs.start()
 }
 
+// ───────────── Atualização automática (GitHub Releases) ─────────────
+
+/** Há trabalho que uma reinicialização interromperia? */
+const isBusy = () => queue.activeCount > 0 || queue.state().jobs.some((j) => j.status === 'aguardando') || tasks.size > 0
+
+function setupUpdates(): void {
+  const enabled = app.isPackaged && process.env.BIGLOOP_NO_UPDATE !== '1'
+  autoUpdater.logger = { info: (m: unknown) => log('info', `[updater] ${String(m)}`), warn: (m: unknown) => log('warn', `[updater] ${String(m)}`), error: (m: unknown) => log('error', `[updater] ${String(m)}`), debug: () => undefined }
+  updates = new UpdateController(autoUpdater as unknown as UpdaterLike, { currentVersion: app.getVersion(), enabled, log })
+  updates.on('status', (st) => send(IPC.evUpdate, st))
+  updates.on('ready', (st) => {
+    // A interface mostra a contagem para reiniciar. Se houver cortes rodando, instala ao fechar o app.
+    if (isBusy() && Notification.isSupported())
+      new Notification({ title: `Atualização ${st.newVersion} pronta`, body: 'Será instalada quando você fechar o app (há cortes em andamento).' }).show()
+  })
+  if (!enabled || !settings.get().autoUpdate) return
+  setTimeout(() => void updates.check(), 4000)
+  setInterval(() => settings.get().autoUpdate && void updates.check(), UPDATE_INTERVAL_MS)
+}
+
+function installUpdateNow(): boolean {
+  if (updates.status.state !== 'pronta') return false
+  quitting = true
+  queue.flush()
+  return updates.install()
+}
+
 // ───────────── IPC ─────────────
 
 const FILE_FILTERS: Record<FileKind, Electron.FileFilter[]> = {
@@ -663,6 +694,7 @@ function registerIpc(): void {
     if (after.watchEnabled !== before.watchEnabled || after.watchDir !== before.watchDir) await restartWatcher()
     if (after.ffmpegPath !== before.ffmpegPath) hwEncoders = null
     if (after.minimizeToTray && !tray) createTray()
+    if (after.autoUpdate && !before.autoUpdate) void updates.check()
     return after
   })
   handle(IPC.setSecret, (_e, kind: 'obs' | 'ai', value: string) => {
@@ -727,6 +759,9 @@ function registerIpc(): void {
   handle(IPC.openExternal, (_e, url: string) => {
     if (/^https:\/\//.test(url)) return shell.openExternal(url)
   })
+  handle(IPC.updateStatus, () => updates.status)
+  handle(IPC.checkUpdates, () => updates.check())
+  handle(IPC.installUpdate, () => installUpdateNow())
   handle(IPC.diagnostics, async () => {
     const s = settings.get()
     const logText = logPath() ? await readFile(logPath()!, 'utf8').catch(() => '') : ''
@@ -736,6 +771,7 @@ function registerIpc(): void {
       `Encoders de vídeo: ${(hwEncoders ?? []).join(', ') || 'nenhum de placa de vídeo'}`,
       `OBS: ${obs.status.state} ${obs.status.version ?? ''} · Monitoramento: ${watchState.enabled ? watchState.dir : 'desligado'}`,
       `Fila: ${queue.state().jobs.length} itens, ${queue.activeCount} processando`,
+      `Atualização: ${updates.status.state}${updates.status.newVersion ? ` (${updates.status.newVersion})` : ''}${updates.status.error ? ` — ${updates.status.error}` : ''}`,
       `Configurações: ${JSON.stringify({ ...s, learnedWeights: undefined })}`,
       '',
       '— Últimas linhas do log —',
@@ -759,6 +795,7 @@ app.whenReady().then(async () => {
   handleMediaProtocol()
   setupQueue()
   setupObs()
+  setupUpdates()
   registerIpc()
   createWindow()
   if (settings.get().minimizeToTray) createTray()

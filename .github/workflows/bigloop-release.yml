@@ -1,0 +1,45 @@
+name: BigLoop AutoClips — publicar versão
+
+# Cada mudança no app gera uma versão nova (0.3.<número da execução>) e publica o instalador
+# no GitHub Releases. O app instalado verifica essa página ao abrir e se atualiza sozinho.
+# Só publica se o typecheck e TODOS os testes passarem no Windows.
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths: ['BigLoop-AutoClips/**', '.github/workflows/bigloop-release.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bigloop-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: BigLoop-AutoClips
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: BigLoop-AutoClips/package-lock.json
+      - name: FFmpeg (para os testes)
+        run: choco install ffmpeg -y --no-progress
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Definir versão
+        shell: bash
+        run: npm version "0.3.${{ github.run_number }}" --no-git-tag-version
+      - name: Construir instalador e publicar no GitHub Releases
+        run: npm run release:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'

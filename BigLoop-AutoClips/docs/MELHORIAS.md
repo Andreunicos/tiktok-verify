@@ -129,7 +129,7 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 | 91 | Testar no Windows | ❌ não há Windows neste ambiente — **próximo passo seu** (CI do GitHub roda testes no Windows) |
 | 92 | Instalador testado num Windows limpo | ❌ idem |
 | 93 | FFmpeg embutido | 🟡 script `scripts/baixar-ffmpeg.ps1` + configuração; não testado |
-| 94 | Atualização automática | ❌ não feito (precisa de servidor/GitHub Releases e assinatura) |
+| 94 | Atualização automática | 🟡 GitHub Releases + electron-updater; atualização testada de verdade com AppImage no Linux; publicação no Windows depende do robô do GitHub |
 | 95 | Sandbox no preload | ✅ |
 | 96 | Instalador assinado | ❌ precisa de certificado de assinatura de código (pago) |
 | 97 | Testes de interface + CI | ✅ E2E no Electron passando; workflow do GitHub criado (rodou? ver Actions) |
@@ -137,4 +137,4 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 | 99 | Interface carregada em partes | ✅ telas de Fila, Configurações e Sobre carregam sob demanda |
 | 100 | Tela Sobre | ✅ |
 
-**Resumo:** 70 ✅ · 20 🟡 · 10 ❌
+**Resumo:** 70 ✅ · 21 🟡 · 9 ❌

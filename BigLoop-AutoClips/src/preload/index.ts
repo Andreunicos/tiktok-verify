@@ -51,13 +51,17 @@ const api: BigLoopApi = {
   showInFolder: (path) => invoke(IPC.showInFolder, path),
   openExternal: (url) => invoke(IPC.openExternal, url),
   diagnostics: () => invoke(IPC.diagnostics),
+  updateStatus: () => invoke(IPC.updateStatus),
+  checkUpdates: () => invoke(IPC.checkUpdates),
+  installUpdate: () => invoke(IPC.installUpdate),
   onQueue: (cb) => on(IPC.evQueue, cb),
   onJobProgress: (cb) => on(IPC.evJobProgress, cb),
   onTaskProgress: (cb) => on(IPC.evTaskProgress, cb),
   onObsStatus: (cb) => on(IPC.evObs, cb),
   onWatchStatus: (cb) => on(IPC.evWatch, cb),
   onLibraryChanged: (cb) => on(IPC.evLibrary, cb),
-  onShortcut: (cb) => on(IPC.evShortcut, cb)
+  onShortcut: (cb) => on(IPC.evShortcut, cb),
+  onUpdate: (cb) => on(IPC.evUpdate, cb)
 }
 
 contextBridge.exposeInMainWorld('bigloop', api)

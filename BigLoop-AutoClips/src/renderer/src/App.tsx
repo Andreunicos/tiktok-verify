@@ -4,6 +4,7 @@ import { SHORTCUTS, typingTarget } from './lib/keys'
 import { Modal, ToastProvider, useToast } from './lib/ui'
 import { Editor } from './views/Editor'
 import { Home } from './views/Home'
+import { UpdateBanner } from './components/UpdateBanner'
 
 const QueueView = lazy(() => import('./views/QueueView'))
 const SettingsView = lazy(() => import('./views/SettingsView'))
@@ -163,6 +164,8 @@ function Shell() {
         </button>
       </header>
 
+      <UpdateBanner autoRestart={settings.autoUpdate} busy={running + waiting > 0} />
+
       <Suspense fallback={<div className="center-msg muted">Carregando…</div>}>
         {view === 'inicio' && (
           <Home
@@ -191,7 +194,7 @@ function Shell() {
         )}
         {view === 'fila' && <QueueView queue={queue} settings={settings} onSettings={updateSettings} />}
         {view === 'config' && <SettingsView settings={settings} tools={tools} obs={obs} watch={watch} section={section} onSettings={updateSettings} onRefreshTools={refreshTools} />}
-        {view === 'sobre' && <About tools={tools} />}
+        {view === 'sobre' && <About tools={tools} autoUpdate={settings.autoUpdate} onSettings={updateSettings} />}
       </Suspense>
 
       {help && (
