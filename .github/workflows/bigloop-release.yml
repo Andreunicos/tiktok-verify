@@ -38,14 +38,37 @@ jobs:
       - name: Definir versão
         shell: bash
         run: npm version "0.3.${{ github.run_number }}" --no-git-tag-version
-      - name: Criar etiqueta da versão
+      # A release é criada ANTES como rascunho: o electron-builder envia os arquivos em paralelo e,
+      # sem uma release existente, cada envio criava a sua (releases duplicadas).
+      - name: Criar etiqueta e release (rascunho)
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="v0.3.${{ github.run_number }}"
           git tag "$tag"
           git push origin "$tag"
-      - name: Construir instalador e publicar no GitHub Releases
+          gh release create "$tag" --draft --title "BigLoop AutoClips $tag" --notes "Versão automática gerada a partir de ${GITHUB_SHA::7}. O app instalado se atualiza sozinho."
+      - name: Construir instalador e enviar para a release
         run: npm run release:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Publicar a release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v0.3.${{ github.run_number }}"
+          assets=$(gh release view "$tag" --json assets --jq '[.assets[].name] | join(" ")')
+          echo "Arquivos: $assets"
+          for f in latest.yml .exe .exe.blockmap; do [[ "$assets" == *"$f"* ]] || { echo "Faltou $f"; exit 1; }; done
+          gh release edit "$tag" --draft=false --latest
+      - name: Limpar releases sem instalador (sobras de execuções anteriores)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq '.[] | select((.assets | map(.name | endswith(".exe")) | any) | not) | .id' |
+          while read -r id; do echo "Apagando release $id"; gh api -X DELETE "repos/${{ github.repository }}/releases/$id"; done
