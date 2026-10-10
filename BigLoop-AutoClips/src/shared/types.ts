@@ -288,6 +288,10 @@ export interface AppSettings {
   onboardingDone: boolean
   /** Verifica e instala atualizações sozinho ao abrir o app. */
   autoUpdate: boolean
+  /** Últimas escolhas do modo automático. */
+  auto: AutoOptions
+  /** Gerar cortes sozinho quando chega gravação nova (OBS ou pasta). */
+  autoOnNewRecording: boolean
 }
 
 export interface ToolInfo {
@@ -312,7 +316,7 @@ export interface WatchStatus {
 }
 
 export interface ObsStatus {
-  state: 'desligado' | 'conectando' | 'conectado' | 'erro'
+  state: 'desligado' | 'conectando' | 'aguardando' | 'conectado' | 'erro'
   version: string | null
   recording: boolean
   recordDir: string | null
@@ -328,6 +332,69 @@ export interface AppInfo {
   platform: string
   userData: string
   logPath: string
+}
+
+// ───────────── Piloto automático (2 cliques) ─────────────
+export type AutoPlatform = 'tiktok' | 'reels' | 'shorts' | 'youtube'
+export type AutoLength = 'curto' | 'medio' | 'longo'
+
+export interface AutoOptions {
+  platform: AutoPlatform
+  count: number
+  length: AutoLength
+  /** Legendas gravadas no vídeo (precisa de transcrição). */
+  subtitles: boolean
+  /** Tira "éé", "hum" e pausas longas (precisa de transcrição com tempo por palavra). */
+  cleanSpeech: boolean
+  /** blur = vídeo inteiro com fundo desfocado; crop = preenche a tela cortando as laterais. */
+  framing: 'blur' | 'crop'
+}
+
+export type AutoStepKey = 'ler' | 'analisar' | 'transcrever' | 'escolher' | 'limpar' | 'exportar'
+
+export interface AutoStep {
+  key: AutoStepKey
+  label: string
+  state: 'pendente' | 'rodando' | 'ok' | 'pulado' | 'erro'
+  detail?: string
+  ratio?: number
+}
+
+export interface AutoClip {
+  segmentId: string
+  index: number
+  title: string
+  description: string
+  hashtags: string[]
+  startSec: number
+  endSec: number
+  durationSec: number
+  score: number
+  reasons: string[]
+  jobId?: string
+  status: JobStatus | 'pendente'
+  ratio: number
+  outputPath?: string
+  thumbnail?: string
+  error?: string
+}
+
+export interface AutoRun {
+  id: string
+  projectId: string
+  path: string
+  fileName: string
+  origin: Project['origin']
+  options: AutoOptions
+  state: 'rodando' | 'concluído' | 'erro' | 'cancelado'
+  steps: AutoStep[]
+  clips: AutoClip[]
+  error?: string
+  notes: string[]
+  outputDir?: string
+  textsFile?: string
+  createdAt: number
+  finishedAt?: number
 }
 
 export interface UpdateStatus {

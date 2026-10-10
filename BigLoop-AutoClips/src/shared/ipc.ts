@@ -25,6 +25,12 @@ export const IPC = {
   exportInterchange: 'export:interchange',
   aiSocial: 'ai:social',
   aiTranslate: 'ai:translate',
+  autoStart: 'auto:start',
+  autoList: 'auto:list',
+  autoCancel: 'auto:cancel',
+  autoRemove: 'auto:remove',
+  installWhisper: 'install:whisper',
+  installFfmpeg: 'install:ffmpeg',
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
   setSecret: 'settings:secret',
@@ -49,5 +55,7 @@ export const IPC = {
   evWatch: 'ev:watch',
   evLibrary: 'ev:library',
   evShortcut: 'ev:shortcut',
-  evUpdate: 'ev:update'
+  evUpdate: 'ev:update',
+  evNotice: 'ev:notice',
+  evAuto: 'ev:auto'
 } as const

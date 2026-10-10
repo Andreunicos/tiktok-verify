@@ -7,7 +7,23 @@ do Premiere nem do OBS (os dois são integrações opcionais).
 > **Estado:** versão 0.3.x. Funciona e foi testado de ponta a ponta em Linux. **Ainda não foi testado no
 > Windows** — veja [BUGS_E_DECISOES.md](BUGS_E_DECISOES.md) e [docs/MELHORIAS.md](docs/MELHORIAS.md).
 
-## O que faz
+## Jeito rápido: 2 cliques
+
+1. Arraste o vídeo para a janela (ou clique para escolher).
+2. Clique em **✨ Gerar cortes**.
+
+O app lê o vídeo, analisa áudio e cenas, transcreve a fala (se as legendas automáticas estiverem ativadas),
+escolhe os melhores momentos, tira “éé”, “hum” e pausas silenciosas, e exporta cada corte no formato da
+plataforma (9:16 para TikTok/Reels/Shorts, com legenda estilo TikTok, volume ajustado e capa), numa pasta com o
+nome do vídeo, mais um `textos para postar.txt` com título e hashtags. As escolhas (plataforma, quantidade,
+tamanho, enquadramento) já vêm marcadas com as últimas usadas.
+
+- **Legendas automáticas**: botão “Ativar” na tela inicial baixa o whisper.cpp + modelo (uma vez, ~470 MB).
+- **Falta FFmpeg?** Botão “Instalar agora”.
+- **Gravações do OBS**: em Configurações → Monitoramento, “Gerar os cortes sozinho quando chegar gravação nova”.
+- Quer ajustar à mão? “Ajustar” em cada corte abre o **Editor avançado**.
+
+## O que faz (completo)
 
 - **Importar** por botão, Ctrl+O ou arrastar; **biblioteca** com os projetos e trechos salvos.
 - **Editor** com player, linha do tempo com zoom, forma de onda, miniaturas, pausas, cenas, marcadores e
@@ -57,7 +73,7 @@ npm run dev
 |---|---|
 | `npm run dev` | App em modo desenvolvimento |
 | `npm run typecheck` | Verificação de tipos (main/preload e interface) |
-| `npm test` | 136 testes (Vitest), incluindo exportações reais com FFmpeg |
+| `npm test` | 149 testes (Vitest), incluindo exportações reais com FFmpeg |
 | `npm run test:e2e` | Abre o app Electron e percorre o fluxo completo (no Linux sem tela: `xvfb-run -a npm run test:e2e`) |
 | `npm run build` | Build de produção em `out/` |
 | `npm run dist:win` | Instalador NSIS local, sem publicar (rodar no Windows) |

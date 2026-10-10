@@ -24,6 +24,7 @@ Inspirado no fluxo do OpusClip — ferramenta própria, sem copiar código de te
 - Não mude `build.publish`, `appId` nem o `owner/repo` sem motivo: isso quebra a atualização dos apps já instalados.
 
 ## Regras
+- Prioridade de produto: o fluxo de 2 cliques (Criar cortes) tem que continuar simples. Opções novas vão para o Editor avançado ou Configurações, não para a tela inicial.
 - Não invente resultados de testes. Rode os comandos e relate a saída real.
 - Não apague nem sobrescreva arquivos do usuário sem autorização. O FFmpeg roda com `-n` e o nome de saída ganha sufixo `(2)`, `(3)`…
 - O arquivo original nunca é modificado.

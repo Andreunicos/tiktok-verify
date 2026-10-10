@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { CutCancelledError, startExport } from '../src/main/media/export'
+import { checkWritableDir, CutCancelledError, moveNoOverwrite, startExport } from '../src/main/media/export'
 import { probeMedia } from '../src/main/media/probe'
 import { detectHardwareEncoders, resolveTool } from '../src/main/media/tools'
 import type { CutRequest, ExportOptions } from '../src/shared/types'
@@ -160,6 +160,27 @@ describe.skipIf(!ffmpeg || !ffprobe)('Exportação com FFmpeg real', () => {
   it('rejeita pedido inválido antes de chamar o FFmpeg', async () => {
     await expect(startExport(make({}, { ranges: [{ startSec: 5, endSec: 9 }] }), { ffmpegPath: ffmpeg! })).rejects.toThrow(/depois do fim/)
     await expect(startExport(make({ mode: 'fast', aspect: '9:16' }), { ffmpegPath: ffmpeg! })).rejects.toThrow(/modo rápido/)
+  })
+
+  it('pasta de saída bloqueada dá mensagem clara antes de rodar o FFmpeg', async () => {
+    const file = join(dir, 'sou-um-arquivo')
+    writeFileSync(file, 'x')
+    const blockedDir = join(file, 'saida')
+    expect(await checkWritableDir(blockedDir)).toMatch(/O Windows não deixou gravar/)
+    expect(await checkWritableDir(join(dir, 'pasta-ok'))).toBeNull()
+    await expect(startExport(make({}, { outputDir: blockedDir }), { ffmpegPath: ffmpeg! })).rejects.toThrow(/Acesso controlado a pastas/)
+  })
+
+  it('move do temporário sem sobrescrever', async () => {
+    const a = join(dir, 'a.tmp')
+    const target = join(dir, 'destino.mp4')
+    writeFileSync(target, 'existente')
+    writeFileSync(a, 'novo')
+    const moved = await moveNoOverwrite(a, target)
+    expect(moved).toBe(join(dir, 'destino (2).mp4'))
+    expect(readFileSync(target, 'utf8')).toBe('existente')
+    expect(readFileSync(moved, 'utf8')).toBe('novo')
+    expect(existsSync(a)).toBe(false)
   })
 
   it('recusa quando falta espaço em disco', async () => {

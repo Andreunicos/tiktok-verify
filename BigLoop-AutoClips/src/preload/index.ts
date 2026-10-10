@@ -38,6 +38,13 @@ const api: BigLoopApi = {
   exportInterchange: (projectId, kind, segmentIds) => invoke(IPC.exportInterchange, projectId, kind, segmentIds),
   aiSocial: (projectId, segmentId, platform) => invoke(IPC.aiSocial, projectId, segmentId, platform),
   aiTranslate: (projectId, language) => invoke(IPC.aiTranslate, projectId, language),
+  autoStart: (path, options) => invoke(IPC.autoStart, path, options),
+  autoList: () => invoke(IPC.autoList),
+  autoCancel: (id) => invoke(IPC.autoCancel, id),
+  autoRemove: (id) => invoke(IPC.autoRemove, id),
+  onAuto: (cb) => on(IPC.evAuto, cb),
+  installWhisper: (taskId, model) => invoke(IPC.installWhisper, taskId, model),
+  installFfmpeg: (taskId) => invoke(IPC.installFfmpeg, taskId),
   getSettings: () => invoke(IPC.getSettings),
   saveSettings: (patch) => invoke(IPC.saveSettings, patch),
   setSecret: (kind, value) => invoke(IPC.setSecret, kind, value),
@@ -61,7 +68,8 @@ const api: BigLoopApi = {
   onWatchStatus: (cb) => on(IPC.evWatch, cb),
   onLibraryChanged: (cb) => on(IPC.evLibrary, cb),
   onShortcut: (cb) => on(IPC.evShortcut, cb),
-  onUpdate: (cb) => on(IPC.evUpdate, cb)
+  onUpdate: (cb) => on(IPC.evUpdate, cb),
+  onNotice: (cb) => on(IPC.evNotice, cb)
 }
 
 contextBridge.exposeInMainWorld('bigloop', api)

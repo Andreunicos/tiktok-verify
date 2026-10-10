@@ -8,6 +8,10 @@ export function obsAuth(password: string, salt: string, challenge: string): stri
   return createHash('sha256').update(secret + challenge).digest('base64')
 }
 
+/** O OBS está fechado ou o servidor WebSocket dele está desligado. */
+export const OBS_CLOSED_MESSAGE =
+  'O OBS não está aberto, ou o servidor WebSocket dele está desligado. No OBS: Ferramentas → Configurações do servidor WebSocket → marque “Ativar servidor WebSocket”. O app conecta sozinho quando o OBS abrir.'
+
 const OP = { Hello: 0, Identify: 1, Identified: 2, Event: 5, Request: 6, RequestResponse: 7 } as const
 /** EventSubscription.General (1) | Outputs (64) */
 const SUBSCRIPTIONS = 1 | 64
@@ -37,7 +41,13 @@ export class ObsClient extends EventEmitter {
       }
       const timer = setTimeout(() => fail('Tempo esgotado ao conectar no OBS. O servidor WebSocket está ativado?'), timeoutMs)
       let versions = { obsVersion: '', wsVersion: '' }
-      ws.on('error', (err) => fail(`Não foi possível conectar no OBS em ${host}:${port} (${err.message}).`))
+      ws.on('error', (err: NodeJS.ErrnoException) =>
+        fail(
+          err.code === 'ECONNREFUSED'
+            ? OBS_CLOSED_MESSAGE
+            : `Não foi possível conectar no OBS em ${host}:${port} (${err.message}).`
+        )
+      )
       ws.on('close', (code) => {
         if (!settled) fail(code === 4009 ? 'Senha do OBS incorreta.' : `Conexão com o OBS fechada (código ${code}).`)
         for (const p of this.pending.values()) {
@@ -103,7 +113,7 @@ export class ObsClient extends EventEmitter {
 }
 
 export interface ObsState {
-  state: 'desligado' | 'conectando' | 'conectado' | 'erro'
+  state: 'desligado' | 'conectando' | 'aguardando' | 'conectado' | 'erro'
   version: string | null
   recording: boolean
   recordDir: string | null
@@ -176,7 +186,7 @@ export class ObsManager extends EventEmitter {
     client.on('event', (type: string, data: Record<string, any>) => this.onEvent(type, data))
     client.on('close', () => {
       if (this.client !== client) return
-      this.set({ state: this.wanted ? 'erro' : 'desligado', recording: false, error: this.wanted ? 'Conexão perdida; tentando de novo…' : null })
+      this.set({ state: this.wanted ? 'aguardando' : 'desligado', recording: false, error: this.wanted ? 'O OBS foi fechado ou a conexão caiu; reconecto sozinho quando ele voltar.' : null })
       this.scheduleRetry()
     })
     try {
@@ -189,7 +199,9 @@ export class ObsManager extends EventEmitter {
       this.set({ state: 'conectado', version: v.obsVersion || null, recording: !!rec.outputActive, recordDir: dir.recordDirectory ?? null, error: null })
     } catch (err) {
       if (this.client !== client) return
-      this.set({ state: 'erro', error: (err as Error).message })
+      const msg = (err as Error).message
+      // OBS fechado não é erro: fica aguardando e tenta de novo.
+      this.set({ state: msg === OBS_CLOSED_MESSAGE ? 'aguardando' : 'erro', error: msg })
       // Senha errada não adianta repetir sem parar.
       if (!/Senha/.test((err as Error).message)) this.scheduleRetry()
     }
@@ -216,7 +228,7 @@ export class ObsManager extends EventEmitter {
         if (data.outputPath) this.emit('recordingFinished', { path: String(data.outputPath), markers })
       }
     } else if (type === 'ExitStarted') {
-      this.set({ state: 'erro', error: 'O OBS foi fechado.' })
+      this.set({ state: 'aguardando', error: 'O OBS foi fechado; reconecto sozinho quando ele voltar.' })
     }
   }
 }

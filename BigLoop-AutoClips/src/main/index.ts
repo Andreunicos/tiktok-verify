@@ -18,20 +18,22 @@ import {
   type IpcMainInvokeEvent
 } from 'electron'
 import type { FileKind } from '../shared/api'
-import { removeFillers } from '../shared/fillers'
+import { DEFAULT_FILLER_OPTIONS, removeFillers } from '../shared/fillers'
 import { buildEdl, buildFcpXml } from '../shared/interchange'
 import { IPC } from '../shared/ipc'
 import { formatSrt, formatVtt, parseSubtitles } from '../shared/subtitles'
 import { learnWeights, suggestClips } from '../shared/suggest'
-import type { AppSettings, CutRequest, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
+import type { AppSettings, AutoRun, CutRequest, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
 import { autoUpdater } from 'electron-updater'
+import { AutoPilot } from './autopilot'
+import { installFfmpeg, installWhisper } from './installer'
 import { AiError, generateSocialCopy, translateCues } from './ai'
 import { redact } from './diagnostics'
 import { readJson, writeJsonAtomic } from './jsonFile'
 import { initLogger, log, logPath } from './logger'
 import { allowMediaDir, allowMediaPath, handleMediaProtocol, registerMediaSchemePrivileges } from './mediaProtocol'
 import { analyzeMedia, generateThumbnails } from './media/analyze'
-import { startExport } from './media/export'
+import { checkWritableDir, moveNoOverwrite, startExport } from './media/export'
 import { probeMedia } from './media/probe'
 import { detectHardwareEncoders, readVersion, resolveTool } from './media/tools'
 import { transcribe } from './media/transcribe'
@@ -57,6 +59,7 @@ let tray: Tray | null = null
 let quitting = false
 let hwEncoders: VideoEncoder[] | null = null
 let updates: UpdateController
+let autopilot: AutoPilot
 const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
 const tasks = new Map<string, AbortController>()
 const watchState: WatchStatus = { enabled: false, dir: '', pending: [], lastImported: null, error: null }
@@ -238,10 +241,36 @@ async function addObsMarker(): Promise<Result<number>> {
 
 // ───────────── Fila de exportação ─────────────
 
+const defaultOutputDir = () => join(app.getPath('videos'), 'BigLoop AutoClips')
+const fallbackOutputDir = () => join(app.getPath('home'), 'BigLoop AutoClips')
+
+/**
+ * A pasta Vídeos pode estar protegida pelo "Acesso controlado a pastas" do Windows.
+ * Se a pasta de saída for a padrão e estiver bloqueada, troca para uma pasta liberada e avisa.
+ * Retorna a pasta que deve ser usada.
+ */
+async function ensureOutputDir(dir: string): Promise<string> {
+  const blocked = await checkWritableDir(dir)
+  if (!blocked) return dir
+  log('warn', 'Pasta de saída bloqueada', { dir, blocked })
+  if (dir !== defaultOutputDir() || dir !== settings.get().outputDir) throw new Error(blocked)
+  const fallback = fallbackOutputDir()
+  if (await checkWritableDir(fallback)) throw new Error(blocked)
+  settings.update({ outputDir: fallback })
+  send(IPC.evNotice, {
+    kind: 'info',
+    text: `O Windows bloqueou a pasta Vídeos (proteção contra ransomware). Os cortes agora vão para ${fallback}. Dá para trocar em Configurações.`
+  })
+  log('info', 'Pasta de saída trocada', { fallback })
+  return fallback
+}
+
 function setupQueue(): void {
   queue = new JobQueue(
     join(app.getPath('userData'), 'fila.json'),
     async (job, report) => {
+      const usable = await ensureOutputDir(job.request.outputDir)
+      if (usable !== job.request.outputDir) job.request = { ...job.request, outputDir: usable }
       const handle = await startExport(job.request, {
         ffmpegPath: requireFfmpeg(),
         lowPriority: settings.get().lowPriority,
@@ -257,13 +286,16 @@ function setupQueue(): void {
     updateTaskbar()
   })
   queue.on('progress', (j: Job) => {
+    autopilot?.jobUpdated(j)
     send(IPC.evJobProgress, j)
     updateTaskbar()
   })
   queue.on('finished', (j: Job) => {
-    log(j.status === 'concluído' ? 'info' : 'error', `Corte ${j.status}`, { id: j.id, out: j.outputPath, error: j.error })
     if (j.status === 'concluído') [j.outputPath!, ...(j.extraFiles ?? [])].forEach(allowMediaPath)
-    if (settings.get().notifyOnDone && Notification.isSupported() && (j.status === 'concluído' || j.status === 'erro')) {
+    autopilot?.jobUpdated(j)
+    log(j.status === 'concluído' ? 'info' : 'error', `Corte ${j.status}`, { id: j.id, out: j.outputPath, error: j.error })
+    const partOfAuto = autopilot?.list().some((r) => r.clips.some((c) => c.jobId === j.id))
+    if (!partOfAuto && settings.get().notifyOnDone && Notification.isSupported() && (j.status === 'concluído' || j.status === 'erro')) {
       const n = new Notification({
         title: j.status === 'concluído' ? 'Corte pronto' : 'Corte falhou',
         body: j.status === 'concluído' ? basename(j.outputPath!) : (j.error ?? '').slice(0, 180)
@@ -297,6 +329,17 @@ async function openMedia(path: string, origin: Project['origin']): Promise<{ met
 }
 
 async function importInBackground(path: string, origin: 'pasta' | 'obs', markers: { timeSec: number; label: string }[] = []): Promise<void> {
+  if (settings.get().autoOnNewRecording) {
+    try {
+      const { project } = await openMedia(path, origin)
+      if (markers.length) projects.addMarkers(project.id, markers.map((m) => ({ ...m, source: 'obs' as const })))
+      autopilot.start(path, settings.get().auto, origin)
+      send(IPC.evLibrary, { projectId: project.id, reason: origin })
+    } catch (err) {
+      log('error', `Falha ao gerar cortes de ${path}`, err)
+    }
+    return
+  }
   try {
     const { meta, project } = await openMedia(path, origin)
     if (markers.length) projects.addMarkers(project.id, markers.map((m) => ({ ...m, source: 'obs' as const })))
@@ -365,10 +408,95 @@ function setupObs(): void {
   if (settings.get().obsEnabled) obs.start()
 }
 
+// ───────────── Modo automático (2 cliques) ─────────────
+
+function setupAutopilot(): void {
+  autopilot = new AutoPilot(
+    {
+      probe: (p) => {
+        const probe = ffprobePath()
+        if (!probe) throw new Error('ffprobe não encontrado. Instale o FFmpeg em Configurações.')
+        return probeMedia(probe, p)
+      },
+      openProject: (meta, origin) => {
+        allowMediaPath(meta.path)
+        const p = projects.open(meta, origin)
+        allowMediaDir(projects.cacheDir(p.id))
+        return p
+      },
+      getProject: (id) => projects.get(id),
+      updateProject: (id, patch) => void projects.update(id, patch),
+      getAnalysis: (id) => projects.getAnalysis(id),
+      saveAnalysis: (id, a) => projects.saveAnalysis(id, a),
+      analyze: (meta, signal, onProgress) =>
+        analyzeMedia(meta, { ffmpegPath: requireFfmpeg(), detectScenes: meta.durationSec < 3 * 3600, signal, onProgress: (_st, r) => onProgress(r) }),
+      transcriber: () => {
+        const s = settings.get()
+        if (!s.whisperPath || !existsSync(s.whisperPath) || !s.whisperModelPath || !existsSync(s.whisperModelPath)) return null
+        return (path, signal, onProgress) =>
+          transcribe(path, {
+            ffmpegPath: requireFfmpeg(),
+            whisperPath: s.whisperPath,
+            modelPath: s.whisperModelPath,
+            language: s.whisperLanguage,
+            threads: s.whisperThreads,
+            signal,
+            onProgress: (_st, r) => onProgress(r)
+          })
+      },
+      aiSocial: async (text, platform) => {
+        const s = settings.get()
+        if (!s.aiEnabled || !s.aiKeyEnc) return null
+        return generateSocialCopy(decryptSecret(s.aiKeyEnc), s.aiModel, text, platform)
+      },
+      enqueue: (req) => queue.add(req),
+      cancelJob: (id) => queue.cancel(id),
+      getJob: (id) => queue.state().jobs.find((j) => j.id === id),
+      exportDefaults: () => settings.get().exportDefaults,
+      outputDir: () => settings.get().outputDir,
+      learnedWeights: () => settings.get().learnedWeights,
+      writeText: async (path, text) => {
+        const tmp = join(app.getPath('temp'), `bigloop-textos-${Date.now()}.txt`)
+        await writeFile(tmp, text, 'utf8')
+        const final = await moveNoOverwrite(tmp, path)
+        allowMediaPath(final)
+        return final
+      },
+      log
+    },
+    join(app.getPath('userData'), 'cortes-automaticos.json')
+  )
+  const notified = new Set<string>()
+  autopilot.on('change', (run: AutoRun) => {
+    send(IPC.evAuto, run)
+    updateTray()
+    for (const c of run.clips) [c.outputPath, c.thumbnail].forEach((f) => f && allowMediaPath(f))
+    if (run.textsFile) allowMediaPath(run.textsFile)
+    if (run.state !== 'rodando' && !notified.has(run.id) && run.finishedAt && Date.now() - run.finishedAt < 5000) {
+      notified.add(run.id)
+      log(run.state === 'concluído' ? 'info' : 'warn', `Modo automático ${run.state}`, { file: run.fileName, clips: run.clips.length, error: run.error })
+      if (Notification.isSupported() && run.state !== 'cancelado') {
+        const ok = run.clips.filter((c) => c.status === 'concluído').length
+        const n = new Notification({
+          title: run.state === 'concluído' ? `🎬 ${ok} cortes prontos!` : 'Não deu para gerar os cortes',
+          body: run.state === 'concluído' ? `${run.fileName} — clique para abrir a pasta.` : (run.error ?? '').slice(0, 180)
+        })
+        n.on('click', () => (run.outputDir ? void shell.openPath(run.outputDir) : showWindow()))
+        n.show()
+      }
+    }
+  })
+  // Reconhece arquivos de execuções antigas para mostrar miniaturas e prévias
+  for (const r of autopilot.list()) {
+    allowMediaPath(r.path)
+    for (const c of r.clips) [c.outputPath, c.thumbnail].forEach((f) => f && allowMediaPath(f))
+  }
+}
+
 // ───────────── Atualização automática (GitHub Releases) ─────────────
 
 /** Há trabalho que uma reinicialização interromperia? */
-const isBusy = () => queue.activeCount > 0 || queue.state().jobs.some((j) => j.status === 'aguardando') || tasks.size > 0
+const isBusy = () => queue.activeCount > 0 || queue.state().jobs.some((j) => j.status === 'aguardando') || tasks.size > 0 || !!autopilot?.isBusy()
 
 function setupUpdates(): void {
   const enabled = app.isPackaged && process.env.BIGLOOP_NO_UPDATE !== '1'
@@ -575,8 +703,13 @@ function registerIpc(): void {
       if (words.length === 0) throw new Error('É preciso uma transcrição com tempo por palavra (whisper.cpp).')
       let removedSec = 0
       let removedWords = 0
+      // Só corta pausas que também são silêncio no áudio (se o vídeo já foi analisado)
+      const silences = projects.getAnalysis(projectId)?.silences
+      const canCutPause = silences
+        ? (a: number, b: number) => silences.reduce((t, s) => t + Math.max(0, Math.min(b, s.endSec) - Math.max(a, s.startSec)), 0) >= (b - a) * 0.8
+        : undefined
       const ranges = seg.ranges.flatMap((r) => {
-        const res = removeFillers(r, words)
+        const res = removeFillers(r, words, { ...DEFAULT_FILLER_OPTIONS, canCutPause })
         removedSec += res.removedSec
         removedWords += res.removedWords
         return res.ranges
@@ -679,6 +812,54 @@ function registerIpc(): void {
     }
   })
 
+  handle(IPC.autoStart, async (_e, path: string, options) => {
+    try {
+      if (!existsSync(path)) throw new Error('Arquivo não encontrado.')
+      settings.update({ auto: options })
+      return ok(autopilot.start(path, settings.get().auto, 'manual'))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.autoList, () => autopilot.list())
+  handle(IPC.autoCancel, (_e, id: string) => autopilot.cancel(id))
+  handle(IPC.autoRemove, (_e, id: string) => autopilot.remove(id))
+  const toolsDir = () => join(app.getPath('userData'), 'ferramentas')
+  handle(IPC.installWhisper, async (_e, taskId: string, model: 'base' | 'small') => {
+    const ctrl = new AbortController()
+    tasks.set(taskId, ctrl)
+    try {
+      const r = await installWhisper(model === 'base' ? 'base' : 'small', {
+        baseDir: toolsDir(),
+        signal: ctrl.signal,
+        onProgress: (label, ratio) => send(IPC.evTaskProgress, { taskId, label, ratio })
+      })
+      settings.update({ whisperPath: r.whisperPath, whisperModelPath: r.modelPath, whisperLanguage: settings.get().whisperLanguage || 'pt' })
+      log('info', 'Legendas automáticas instaladas', r)
+      return ok(r)
+    } catch (err) {
+      log('error', 'Falha ao instalar whisper.cpp', err)
+      return fail(err)
+    } finally {
+      tasks.delete(taskId)
+    }
+  })
+  handle(IPC.installFfmpeg, async (_e, taskId: string) => {
+    const ctrl = new AbortController()
+    tasks.set(taskId, ctrl)
+    try {
+      const r = await installFfmpeg({ baseDir: toolsDir(), signal: ctrl.signal, onProgress: (label, ratio) => send(IPC.evTaskProgress, { taskId, label, ratio }) })
+      settings.update({ ffmpegPath: r.ffmpegPath, ffprobePath: r.ffprobePath })
+      hwEncoders = null
+      log('info', 'FFmpeg instalado', r)
+      return ok(r)
+    } catch (err) {
+      log('error', 'Falha ao instalar FFmpeg', err)
+      return fail(err)
+    } finally {
+      tasks.delete(taskId)
+    }
+  })
   handle(IPC.getSettings, () => settings.get())
   handle(IPC.saveSettings, async (_e, patch: Partial<AppSettings>) => {
     const before = settings.get()
@@ -789,24 +970,28 @@ app.on('second-instance', showWindow)
 
 app.whenReady().then(async () => {
   const lp = initLogger(join(app.getPath('userData'), 'logs'))
-  settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), defaultSettings({ outputDir: join(app.getPath('videos'), 'BigLoop AutoClips') }))
+  settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), defaultSettings({ outputDir: defaultOutputDir() }))
   projects = new ProjectStore(join(app.getPath('userData'), 'projetos'))
   log('info', `BigLoop AutoClips ${app.getVersion()} iniciado`, { log: lp })
   handleMediaProtocol()
   setupQueue()
   setupObs()
   setupUpdates()
+  setupAutopilot()
   registerIpc()
   createWindow()
   if (settings.get().minimizeToTray) createTray()
   registerShortcut()
   await restartWatcher()
+  // Detecta logo ao abrir se a pasta padrão está bloqueada (sem travar a abertura)
+  if (settings.get().outputDir === defaultOutputDir()) void ensureOutputDir(defaultOutputDir()).catch((err) => log('warn', 'Pasta de saída', err))
   app.on('activate', showWindow)
 })
 
 app.on('before-quit', () => {
   quitting = true
   queue?.flush()
+  autopilot?.flush()
 })
 
 app.on('will-quit', () => {

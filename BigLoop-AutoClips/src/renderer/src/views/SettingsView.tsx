@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, ObsStatus, ToolStatus, WatchStatus } from '@shared/types'
+import { SetupCard } from '../components/SetupCard'
 import { Field, Toggle, useToast } from '../lib/ui'
 
 interface Props {
@@ -10,6 +11,7 @@ interface Props {
   section?: string
   onSettings: (patch: Partial<AppSettings>) => Promise<void>
   onRefreshTools: () => Promise<void>
+  onAbout: () => void
 }
 
 const SECTIONS = [
@@ -19,7 +21,8 @@ const SECTIONS = [
   ['monitoramento', 'Monitoramento'],
   ['obs', 'OBS'],
   ['ia', 'IA (opcional)'],
-  ['diagnostico', 'Diagnóstico']
+  ['diagnostico', 'Diagnóstico'],
+  ['sobre', 'Sobre e atualizações']
 ] as const
 
 export default function SettingsView(p: Props) {
@@ -51,7 +54,7 @@ export default function SettingsView(p: Props) {
     <main className="settings-view">
       <nav className="settings-nav" aria-label="Seções">
         {SECTIONS.map(([id, label]) => (
-          <button key={id} className="ghost" onClick={() => refs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+          <button key={id} className="ghost" onClick={() => (id === 'sobre' ? p.onAbout() : refs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' }))}>
             {label}
           </button>
         ))}
@@ -93,6 +96,7 @@ export default function SettingsView(p: Props) {
 
         <section className="card" ref={sec('ffmpeg')}>
           <h2>FFmpeg</h2>
+          {p.tools && (p.tools.ffmpeg.error || p.tools.ffprobe.error) && <SetupCard tools={p.tools} onInstalled={p.onRefreshTools} />}
           <p className="muted small">Deixe em branco para detectar sozinho (variáveis BIGLOOP_FFMPEG/BIGLOOP_FFPROBE, pasta do instalador ou PATH).</p>
           <Field label="ffmpeg.exe">
             <div className="row">
@@ -135,7 +139,14 @@ export default function SettingsView(p: Props) {
         </section>
 
         <section className="card" ref={sec('transcricao')}>
-          <h2>Transcrição (whisper.cpp)</h2>
+          <h2>Legendas automáticas (transcrição)</h2>
+          {p.tools && !p.tools.whisper.error ? (
+            <p className="ok">✓ Ativadas · {p.tools.whisper.version}</p>
+          ) : (
+            <SetupCard tools={p.tools} onInstalled={p.onRefreshTools} />
+          )}
+          <details>
+            <summary className="muted small">Configuração manual (avançado)</summary>
           <p className="muted small">
             Roda 100% no seu computador, sem custo e sem enviar áudio para a internet. Baixe o <strong>whisper.cpp</strong> para Windows (arquivo
             whisper-cli.exe) e um modelo ggml — <code>ggml-small.bin</code> é um bom equilíbrio; <code>ggml-medium.bin</code> erra menos, mas é mais lento.
@@ -174,6 +185,7 @@ export default function SettingsView(p: Props) {
             </Field>
           </div>
           {p.tools && <p className={p.tools.whisper.error ? 'warn small' : 'ok small'}>{p.tools.whisper.error ? `✗ ${p.tools.whisper.error}` : `✓ pronto · ${p.tools.whisper.version}`}</p>}
+          </details>
         </section>
 
         <section className="card" ref={sec('monitoramento')}>
@@ -201,7 +213,15 @@ export default function SettingsView(p: Props) {
               )}
             </div>
           </Field>
-          <Toggle checked={s.watchAutoAnalyze} onChange={(v) => p.onSettings({ watchAutoAnalyze: v })} label="Analisar e sugerir cortes automaticamente ao importar" />
+          <Toggle
+            checked={s.autoOnNewRecording}
+            onChange={(v) => p.onSettings({ autoOnNewRecording: v })}
+            label="Gerar os cortes sozinho quando chegar gravação nova"
+            hint="Usa as últimas escolhas da tela “Criar cortes” (plataforma, quantidade, tamanho). Vale para o OBS e para a pasta monitorada."
+          />
+          {!s.autoOnNewRecording && (
+            <Toggle checked={s.watchAutoAnalyze} onChange={(v) => p.onSettings({ watchAutoAnalyze: v })} label="Só analisar e sugerir (sem exportar)" />
+          )}
           {p.watch && (
             <p className={p.watch.error ? 'warn small' : 'muted small'}>
               {p.watch.error ?? (p.watch.enabled ? `Monitorando ${p.watch.dir}${p.watch.lastImported ? ` · último: ${p.watch.lastImported}` : ''}` : 'Desligado')}

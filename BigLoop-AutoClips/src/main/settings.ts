@@ -33,7 +33,9 @@ export function defaultSettings(paths: { outputDir: string }): AppSettings {
     aiKeyEnc: '',
     aiModel: '',
     onboardingDone: false,
-    autoUpdate: true
+    autoUpdate: true,
+    auto: { platform: 'tiktok', count: 5, length: 'medio', subtitles: true, cleanSpeech: true, framing: 'blur' },
+    autoOnNewRecording: false
   }
 }
 

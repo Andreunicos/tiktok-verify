@@ -1,5 +1,7 @@
 import type {
   AnalysisResult,
+  AutoOptions,
+  AutoRun,
   AppInfo,
   AppSettings,
   CutRequest,
@@ -68,6 +70,15 @@ export interface BigLoopApi {
   // IA (opcional, paga, desligada por padrão)
   aiSocial(projectId: string, segmentId: string, platform: string): Promise<Result<SocialCopy>>
   aiTranslate(projectId: string, language: string): Promise<Result<Transcript>>
+  // Modo automático (2 cliques)
+  autoStart(path: string, options: AutoOptions): Promise<Result<AutoRun>>
+  autoList(): Promise<AutoRun[]>
+  autoCancel(id: string): Promise<void>
+  autoRemove(id: string): Promise<void>
+  onAuto(cb: (run: AutoRun) => void): () => void
+  // Instalação de ferramentas com 1 clique (Windows)
+  installWhisper(taskId: string, model: 'base' | 'small'): Promise<Result<{ whisperPath: string; modelPath: string }>>
+  installFfmpeg(taskId: string): Promise<Result<{ ffmpegPath: string; ffprobePath: string }>>
   // Configurações e ferramentas
   getSettings(): Promise<AppSettings>
   saveSettings(patch: Partial<AppSettings>): Promise<AppSettings>
@@ -97,4 +108,6 @@ export interface BigLoopApi {
   onLibraryChanged(cb: (info: { projectId: string; reason: 'pasta' | 'obs' | 'marcador' }) => void): () => void
   onShortcut(cb: (action: 'marker') => void): () => void
   onUpdate(cb: (s: UpdateStatus) => void): () => void
+  /** Avisos do processo principal (ex.: pasta de saída trocada). */
+  onNotice(cb: (n: { kind: 'info' | 'ok' | 'erro'; text: string }) => void): () => void
 }

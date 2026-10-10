@@ -121,3 +121,16 @@ describe('social (local)', () => {
   })
   it('título prefere exclamação/pergunta', () => expect(localTitle(text)).toBe('Vocês não vão acreditar nessa jogada!'))
 })
+
+describe('removeFillers com canCutPause', () => {
+  it('não corta pausa de fala quando o áudio não é silêncio (gameplay)', () => {
+    const words = [
+      { startSec: 0, endSec: 0.5, text: 'olha' },
+      { startSec: 5, endSec: 5.5, text: 'isso!' }
+    ]
+    const keepAll = removeFillers({ startSec: 0, endSec: 10 }, words, { fillers: [], maxPauseSec: 0.6, keepPauseSec: 0.15, canCutPause: () => false })
+    expect(keepAll.ranges).toEqual([{ startSec: 0, endSec: 10 }])
+    const cutAll = removeFillers({ startSec: 0, endSec: 10 }, words, { fillers: [], maxPauseSec: 0.6, keepPauseSec: 0.15 })
+    expect(cutAll.removedSec).toBeGreaterThan(8)
+  })
+})

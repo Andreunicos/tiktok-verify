@@ -3,7 +3,9 @@ const STOPWORDS = new Set(
   muito muita muitos muitas eu tu ele ela nós vós eles elas você vocês me te lhe nos vos meu minha seu sua isso isto
   aquilo esse essa este esta aquele aquela aí ali aqui lá então tipo né já não sim só também foi ser ter tem tá tô
   vai vou era está estou estava como quando onde porque por que qual quem ao à às pelo pela pelos pelas até sobre
-  depois antes agora ainda bem gente cara mano assim coisa coisas fazer faz fiz vamos lo la le the and to of`.split(/\s+/)
+  depois antes agora ainda bem gente cara mano assim coisa coisas fazer faz fiz vamos lo la le the and to of
+  tudo hoje ontem amanhã sempre nada nunca cada mesmo mesma outro outra outros todos todas toda todo pessoal
+  estão vocês você aqui olha olhem tava estava estamos fica ficou pode podia quero queria vou vai vamo tipo então`.split(/\s+/)
 )
 
 const strip = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '')

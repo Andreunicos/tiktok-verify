@@ -9,6 +9,11 @@ export interface FillerOptions {
   maxPauseSec: number
   /** Quanto de pausa manter quando encurta. */
   keepPauseSec: number
+  /**
+   * Decide se uma pausa sem fala pode ser cortada. Use para só cortar o que também é
+   * silêncio no áudio (numa gameplay, sem voz não quer dizer sem ação). Padrão: sempre.
+   */
+  canCutPause?: (startSec: number, endSec: number) => boolean
 }
 
 export const DEFAULT_FILLER_OPTIONS: FillerOptions = { fillers: DEFAULT_FILLERS, maxPauseSec: 0.6, keepPauseSec: 0.15 }
@@ -34,12 +39,13 @@ export function removeFillers(
 
   const half = opts.keepPauseSec / 2
   const fillerBetween = (a: number, b: number) => inside.some((w) => isFiller(w) && w.startSec >= a - 0.01 && w.endSec <= b + 0.01)
+  const pauseCuttable = (a: number, b: number) => b - a > opts.maxPauseSec && (opts.canCutPause?.(a, b) ?? true)
   const out: Range[] = []
 
   // Início: corta pausa longa ou vício antes da primeira palavra mantida.
   const first = kept[0]
   let cursor =
-    first.startSec - range.startSec > opts.maxPauseSec || fillerBetween(range.startSec, first.startSec)
+    pauseCuttable(range.startSec, first.startSec) || fillerBetween(range.startSec, first.startSec)
       ? Math.max(range.startSec, first.startSec - half)
       : range.startSec
 
@@ -47,14 +53,14 @@ export function removeFillers(
     const prev = kept[i - 1]
     const cur = kept[i]
     const gap = cur.startSec - prev.endSec
-    if (gap > opts.maxPauseSec || fillerBetween(prev.endSec, cur.startSec)) {
+    if (pauseCuttable(prev.endSec, cur.startSec) || fillerBetween(prev.endSec, cur.startSec)) {
       const pad = Math.min(half, Math.max(0, gap) / 2)
       out.push({ startSec: cursor, endSec: prev.endSec + pad })
       cursor = cur.startSec - pad
     }
   }
   const last = kept[kept.length - 1]
-  const tailCut = range.endSec - last.endSec > opts.maxPauseSec || fillerBetween(last.endSec, range.endSec)
+  const tailCut = pauseCuttable(last.endSec, range.endSec) || fillerBetween(last.endSec, range.endSec)
   out.push({ startSec: cursor, endSec: tailCut ? Math.min(range.endSec, last.endSec + half) : range.endSec })
 
   const merged: Range[] = []

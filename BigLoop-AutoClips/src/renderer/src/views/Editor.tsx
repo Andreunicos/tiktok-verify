@@ -19,6 +19,8 @@ type Tab = 'exportar' | 'sugestoes' | 'transcricao' | 'redes' | 'info'
 
 interface Props {
   projectId: string
+  /** Trecho a selecionar ao abrir (vindo de “Ajustar” no modo automático). */
+  focusSegmentId?: string | null
   settings: AppSettings
   tools: ToolStatus | null
   onSettings: (patch: Partial<AppSettings>) => Promise<void>
@@ -69,7 +71,9 @@ export function Editor(p: Props) {
       setProject(opened.value.project)
       setMeta(opened.value.meta)
       setSegmentsRaw(opened.value.project.segments)
-      setChecked(new Set(opened.value.project.segments.map((s) => s.id)))
+      const focus = p.focusSegmentId ? opened.value.project.segments.find((s) => s.id === p.focusSegmentId) : null
+      setChecked(new Set(focus ? [focus.id] : opened.value.project.segments.map((s) => s.id)))
+      if (focus) setSelectedId(focus.id)
       history.current = { past: [], future: [] }
       const a = await api().getAnalysis(p.projectId)
       if (!alive) return
@@ -364,6 +368,9 @@ export function Editor(p: Props) {
             </span>
           </div>
           <div className="row">
+            <button className="ghost small" onClick={p.onClose} title="Voltar para a lista de vídeos">
+              ← Vídeos
+            </button>
             <button className="ghost small" onClick={undo} disabled={history.current.past.length === 0} title="Desfazer (Ctrl+Z)">
               ↶
             </button>

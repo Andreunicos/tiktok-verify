@@ -75,7 +75,7 @@ describe('OBS WebSocket', () => {
     await new Promise((r) => s.wss.once('listening', r))
     await expect(new ObsClient().connect('127.0.0.1', s.port(), 'errada')).rejects.toThrow(/Senha do OBS incorreta/)
     await expect(new ObsClient().connect('127.0.0.1', s.port(), '')).rejects.toThrow(/exige senha/)
-    await expect(new ObsClient().connect('127.0.0.1', 1, 'x', 1000)).rejects.toThrow(/Não foi possível conectar|Tempo esgotado/)
+    await expect(new ObsClient().connect('127.0.0.1', 1, 'x', 1000)).rejects.toThrow(/OBS não está aberto/)
     await expect(ObsManager.test('127.0.0.1', s.port(), 'segredo')).resolves.toBe('OBS 31.0.0 · obs-websocket 5.5.0')
   })
 
@@ -115,7 +115,7 @@ describe('OBS WebSocket', () => {
     await s.close()
     servers.pop()
     await wait(100)
-    expect(m.status.state).toBe('erro')
+    expect(m.status.state).toBe('aguardando')
     // OBS "volta" na mesma porta
     const again = new WebSocketServer({ port })
     again.on('connection', (ws) => {
