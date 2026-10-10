@@ -4,40 +4,48 @@
 
 | Data | Decisão | Motivo |
 |---|---|---|
-| 2026-10-10 | Projeto único `BigLoop-AutoClips/` com `src/main`, `src/preload`, `src/renderer`, `src/shared` em vez de monorepo `apps/`/`packages/` | Fase 1 não precisa de vários pacotes; o guia permite ajustar a estrutura. Separar quando surgir o plugin Premiere. |
-| 2026-10-10 | electron-vite 5 + Vite 7 + React 19 + TypeScript | Template mantido, um só build para main/preload/renderer. Vite 8 ainda não suportado pelo electron-vite 5. |
-| 2026-10-10 | FFmpeg chamado direto via `child_process.spawn` (sem wrapper npm) | Menos dependências; controle total dos argumentos e do progresso. |
-| 2026-10-10 | FFmpeg não é baixado pelo `npm install` | Evita download de binário em postinstall e questões de licença. Usuário instala ou coloca em `resources/bin`. |
-| 2026-10-10 | Dois modos: **preciso** (libx264 CRF 20 + AAC 192k) e **rápido** (`-c copy`) | Copiar é instantâneo mas só corta em keyframe; reencode corta no frame exato. |
-| 2026-10-10 | `-ss` antes de `-i` | Busca rápida em arquivos longos; com reencode o FFmpeg ≥ 2.1 continua preciso. Testado: 3,5s pedidos → duração dentro de ±0,1s. |
-| 2026-10-10 | Saída sempre `.mp4` com `+faststart`, `-n` e nome único | Compatível com redes sociais; nunca sobrescreve. |
-| 2026-10-10 | Preferências em JSON, sem SQLite | Só há 4 preferências. SQLite entra com a fila persistente (Fase 5). |
-| 2026-10-10 | Sem serviço Python | Recomendação do guia. Reavaliar na Fase 2 (faster-whisper vs. whisper.cpp). |
-| 2026-10-10 | Protocolo `bigloop-media://` com suporte a Range | `file://` é bloqueado no renderer isolado e o `<video>` precisa de Range para buscar posições. |
+| 2026-10-10 | Projeto único `BigLoop-AutoClips/` (main/preload/renderer/shared) em vez de monorepo | Menos peças; separar quando houver plugin UXP |
+| 2026-10-10 | electron-vite 5 + Vite 7 + React 19 + TypeScript | Template mantido; Vite 8 ainda não suportado pelo electron-vite 5 |
+| 2026-10-10 | FFmpeg via `spawn`, sem wrapper npm, e não baixado pelo `npm install` | Controle total; evita download em postinstall e questões de licença |
+| 2026-10-10 | Um único comando FFmpeg com `-filter_complex` para corte, união, velocidade, proporção, fades, legendas e áudio | Uma passada só; frame exato |
+| 2026-10-10 | Legendas gravadas via arquivo `.ass` num diretório temporário e `cwd` do FFmpeg | Evita o escape de caminhos do Windows dentro do filtro |
+| 2026-10-10 | Normalização em −14 LUFS (`loudnorm` de uma passada) | Referência comum das redes; uma passada é suficiente para cortes curtos |
+| 2026-10-10 | Encoders de placa de vídeo só aparecem se um encode de teste funcionar | O FFmpeg lista NVENC/QSV/AMF mesmo sem a placa |
+| 2026-10-10 | Persistência em JSON atômico (configurações, fila, projetos), **não SQLite** | Volume pequeno; SQLite exige módulo nativo recompilado para o Electron. Reavaliar se a biblioteca crescer muito |
+| 2026-10-10 | Transcrição com **whisper.cpp** (binário), sem serviço Python | Instalação simples no Windows, sem Python; JSON com tempo por palavra (`-ml 1 -sow`) |
+| 2026-10-10 | Sugestões por heurística explicável (sem modelo de IA) + pesos aprendidos | Grátis, local, explicável; o guia pede “pontuação explicável, não promessa de viralização” |
+| 2026-10-10 | IA externa opcional, desligada, com a chave do usuário; SDK oficial `@anthropic-ai/sdk`, modelo `claude-opus-5-5`, esforço `low`, saída estruturada (zod), `fallbacks: "default"` | Custos explícitos; só texto sai do computador |
+| 2026-10-10 | Premiere via **FCP XML** (e EDL), não plugin UXP | XML funciona em várias versões do Premiere e no DaVinci; a API UXP muda entre versões e não pôde ser testada |
+| 2026-10-10 | OBS via obs-websocket v5 (pacote `ws`); importação ao receber `OBS_WEBSOCKET_OUTPUT_STOPPED` | Evento oficial de fim de gravação; a pasta monitorada cobre o caso sem OBS conectado |
+| 2026-10-10 | Arquivo “pronto” = tamanho e data estáveis por 2 checagens + abrir para escrita | No Windows o OBS trava o arquivo enquanto grava |
+| 2026-10-10 | Preload com `sandbox: true` | Menor superfície de ataque; o preload só usa `contextBridge`, `ipcRenderer` e `webUtils` |
+| 2026-10-10 | Sem publicação automática, sem apagar originais, sem importar VODs de terceiros | Regra do guia + termos de uso/direitos |
 
 ## Limitações conhecidas
 
-- **Windows não testado ainda.** Todo o desenvolvimento e testes rodaram em Linux (container). Caminhos,
-  diálogos nativos e o instalador NSIS precisam de verificação manual no Windows 10/11.
-- No modo **rápido**, o corte começa no keyframe anterior ao início pedido (até um GOP a mais de duração).
-- O player usa o decodificador do Chromium: arquivos HEVC/H.265 ou alguns MKV podem não exibir prévia,
-  mas o corte via FFmpeg funciona normalmente.
-- A lista de cortes é só da sessão (não persiste ao fechar o app).
-- O renderer tem ~665 kB (React em produção, sem divisão de código) — aceitável para app desktop.
+- **Windows não testado.** Diálogos nativos, bandeja, notificações, barra de tarefas, atalho global, DPAPI e o
+  instalador precisam de verificação manual.
+- Transcrição, OBS, Premiere/DaVinci e IA foram testados com **simuladores**, não com os programas reais.
+- Emojis nas legendas gravadas saem **sem cor** (limitação do libass).
+- Modo rápido (cópia) pode começar no keyframe anterior.
+- O player usa o decodificador do Chromium: HEVC ou alguns MKV podem não ter prévia (o corte funciona).
+- Interface só em português.
+- `npm audit` aponta avisos em dependências de **desenvolvimento** (vitest/tinypool, electron-builder);
+  não vão para o app instalado. Atualizar o vitest para 4.x resolve parte — pendente.
 
 ## Bugs
 
-Nenhum bug aberto.
+Nenhum bug aberto conhecido. Corrigidos durante o desenvolvimento (achados pelos testes):
+- Linha do tempo era achatada pelo layout e escondia a faixa de trechos (CSS `flex-shrink`).
+- Capa JPG dos cortes não aparecia na galeria (arquivo não liberado no protocolo de mídia).
+- Ferramentas não eram reconsultadas ao mudar o caminho do whisper/FFmpeg.
+- Recusa da IA não era detectada antes de ler o JSON.
 
-## Registro de verificação (2026-10-10, Linux, FFmpeg 6.1.1)
+## Registro de verificação (2026-10-10, Linux, FFmpeg 6.1.1, Electron 44.7.0)
 
 | Comando | Resultado real |
 |---|---|
 | `npm run typecheck` | sem erros |
-| `npm test` | 3 arquivos, 41 testes, todos passaram |
-| `npm run build` | build de main, preload e renderer concluído |
-| E2E com Playwright + Electron 44 sob Xvfb (script fora do repositório) | app abriu; vídeo 1280×720 de 20s importado; player carregou pelo `bigloop-media://`; marcado fim em 12,3s com o botão; corte 3,0→12,3s gerado; FFprobe confirmou h264 + aac e duração 9,300s; arquivo corrompido mostrou erro legível; Configurações detectou ffmpeg/ffprobe; nenhum erro no console |
-
-Testes de integração cobrem: metadados, arquivo corrompido/inexistente, corte preciso e rápido
-(decodificação completa sem erros), sem áudio, nome duplicado → sufixo `(2)`, intervalo inválido
-e cancelamento apagando o arquivo parcial.
+| `npm test` | 12 arquivos, **131 testes, todos passaram** (~45 s; inclui exportações reais com FFmpeg) |
+| `npm run build` | build concluído; Fila/Configurações/Sobre em chunks separados |
+| `xvfb-run -a node tests/e2e/app.e2e.mjs` | **passou**, sem erros no console: importar → analisar (10 pausas, 1 cena) → aprovar sugestão → transcrever (whisper simulado) → buscar → trecho por teclado → exportar 2 cortes TikTok 9:16 com legenda e capa (FFprobe confirmou 1080×1920 + áudio) → XML e EDL → apagar e desfazer → OBS simulado (conectar, marcador em 11 s, importar ao parar) → pasta monitorada → configurações, tema, sobre, diagnóstico |

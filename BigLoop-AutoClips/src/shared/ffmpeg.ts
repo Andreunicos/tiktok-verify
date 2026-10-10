@@ -110,7 +110,7 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
     args.push('-map', '0:v:0?')
     if (wantAudio) args.push('-map', `0:a:${trackIdx}?`)
     else args.push('-an')
-    args.push('-c', 'copy', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', '-sn', '-dn', outputPath)
+    args.push('-c', 'copy', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', ...metadataArgs(req), '-sn', '-dn', outputPath)
     return { args, durationSec: duration }
   }
 
@@ -188,8 +188,16 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
   } else {
     args.push('-an', '-loop', '0')
   }
+  if (o.format !== 'gif') args.push(...metadataArgs(req))
   args.push('-sn', '-dn', outputPath)
   return { args, durationSec: duration }
+}
+
+/** Título (nome do trecho) e comentário gravados dentro do arquivo. */
+export function metadataArgs(req: Pick<CutRequest, 'segmentName'>): string[] {
+  const out = ['-metadata', 'comment=Criado com BigLoop AutoClips']
+  if (req.segmentName?.trim()) out.push('-metadata', `title=${req.segmentName.trim().slice(0, 200)}`)
+  return out
 }
 
 /** Extrai um quadro JPEG (capa) do arquivo exportado. */

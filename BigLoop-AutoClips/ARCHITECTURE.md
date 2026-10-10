@@ -2,49 +2,55 @@
 
 ```
 src/
-  main/                 Processo principal do Electron (Node)
-    index.ts            Janela, IPC, ciclo de vida
-    mediaProtocol.ts    Protocolo bigloop-media:// para o player (com Range/seek)
-    settings.ts         Preferências em JSON
-    logger.ts           Log em arquivo
-    media/              ⚠ sem import de "electron" — testável com Vitest
-      tools.ts          Localiza ffmpeg/ffprobe e lê versão
-      probe.ts          Metadados via ffprobe
-      cut.ts            Corte via ffmpeg: progresso, cancelamento, nome único
-  preload/index.ts      Ponte segura (contextBridge) → window.bigloop
-  renderer/             React (interface)
-    src/App.tsx         Tela de corte
-    src/components/     Timeline, Metadados, Lista de cortes, Configurações
-  shared/               Código puro usado por todos os processos
-    types.ts, ipc.ts    Contratos e nomes de canais IPC
-    time.ts             Parse/format de timecode
-    ffmpeg.ts           Argumentos do FFmpeg, parse do ffprobe e do progresso
-    validation.ts       Validação de intervalo
-tests/                  Vitest (unitários + integração com FFmpeg real)
-resources/bin/          FFmpeg opcional para o instalador
-docs/                   Guia do projeto
+  shared/                 Código puro (sem Node/Electron), usado por todos — tudo com teste unitário
+    types.ts, api.ts      Tipos e contrato da API entre interface e processo principal
+    ipc.ts                Nomes dos canais IPC
+    ffmpeg.ts             Comando de exportação (filtros, encoders, formatos), parse do ffprobe/progresso
+    presets.ts            Presets por rede e tamanhos de saída
+    subtitles.ts          SRT/VTT, ASS estilo TikTok, mapeamento de legendas para o tempo do corte
+    analysis.ts           Energia/picos do áudio (streaming), silêncios, cenas
+    suggest.ts            Sugestões com nota explicável + aprendizado de pesos
+    fillers.ts            Remoção de “éé/hum” e pausas por tempo de palavra
+    whisper.ts            Leitura do JSON do whisper.cpp
+    interchange.ts        FCP XML (Premiere/DaVinci) e EDL
+    naming.ts, social.ts, time.ts, validation.ts
+  main/                   Processo principal (Node + Electron)
+    index.ts              Janela, IPC, bandeja, atalhos, notificações, segredos, ciclo de vida
+    media/                ⚠ sem import de "electron" — testável no Node
+      export.ts           Executa a exportação: espaço em disco, prioridade, legendas, capa, cancelamento
+      analyze.ts          Análise de áudio/cenas e miniaturas
+      transcribe.ts       whisper.cpp
+      probe.ts, tools.ts  ffprobe; localizar ferramentas e testar encoders de placa de vídeo
+    queue.ts              Fila persistente (concorrência, prioridade, pausa, repetir)
+    projects.ts           Biblioteca de projetos (JSON atômico por projeto + cache)
+    watcher.ts            Pasta monitorada com checagem de arquivo terminado
+    obs.ts                Cliente obs-websocket v5 + gerenciador com reconexão e marcadores
+    ai.ts                 IA opcional (SDK oficial da Anthropic, saída estruturada)
+    settings.ts, jsonFile.ts, logger.ts, diagnostics.ts, mediaProtocol.ts
+  preload/index.ts        contextBridge → window.bigloop (sandbox ativado)
+  renderer/src/           Interface React
+    App.tsx               Navegação, tema, arrastar e soltar, atalhos globais
+    views/                Início, Editor, Fila, Configurações, Sobre (as três últimas carregam sob demanda)
+    components/           Timeline (canvas), Player (quadro de recorte), painéis de exportação,
+                          sugestões, transcrição e lista de trechos
+tests/                    Vitest (unitários + integração com FFmpeg real) e e2e/app.e2e.mjs (Electron)
 ```
 
 ## Fluxo de um corte
 
-1. Renderer chama `window.bigloop.pickVideo()` → diálogo nativo no main.
-2. `probe(path)` → main executa `ffprobe -print_format json` → `parseProbeOutput` → `MediaMetadata`.
-   O caminho entra numa allowlist do protocolo `bigloop-media://`, usada pelo `<video>`.
-3. `startCut(req)` → main valida o intervalo, escolhe nome único e executa
-   `ffmpeg -n -progress pipe:1 -ss <início> -i <arquivo> -t <duração> …`.
-4. Linhas `out_time_us` viram eventos `cut:progress`; o término vira `cut:done`.
-5. Em erro ou cancelamento o arquivo parcial é apagado.
+1. A interface monta um `CutRequest` por trecho (intervalos, opções, legendas, dados da origem) e envia para a fila.
+2. A fila chama `startExport`: valida, escolhe nome único, checa espaço, grava o `.ass` num diretório temporário
+   e roda `ffmpeg -n -progress pipe:1 -ss … -t … -i origem -filter_complex …` com prioridade baixa.
+3. O progresso (`out_time_us`) vira porcentagem e tempo restante; ao terminar, gera SRT e capa se pedido.
+4. Erro ou cancelamento apagam o arquivo parcial. O original nunca é alterado.
 
-## Segurança
+## Segurança e privacidade
 
-- `contextIsolation: true`, `nodeIntegration: false`; renderer só acessa a API tipada do preload.
-- CSP restringe scripts a `'self'` e mídia a `bigloop-media:`.
-- O protocolo de mídia só serve arquivos que o usuário importou (allowlist em memória).
-- Links externos abrem no navegador do sistema; novas janelas são bloqueadas.
-- O FFmpeg é chamado com `spawn` e lista de argumentos (sem shell), evitando injeção por nomes de arquivo.
-- `sandbox: false` no preload por simplicidade — revisar na Fase 7.
-
-## Decisões de tecnologia
-
-Ver BUGS_E_DECISOES.md. Resumo: sem serviço Python e sem SQLite por enquanto; ambos entram
-quando houver necessidade concreta (transcrição na Fase 2, fila persistente na Fase 5).
+- `contextIsolation`, `nodeIntegration: false`, **`sandbox: true`**; a interface só acessa a API tipada.
+- CSP: scripts só do próprio app; mídia e imagens só de `bigloop-media:`.
+- O protocolo `bigloop-media://` só serve arquivos importados/gerados e pastas de cache do app.
+- Navegação e novas janelas bloqueadas; links externos só `https:` no navegador do sistema.
+- Processos externos via `spawn` com lista de argumentos (sem shell).
+- Senha do OBS e chave da IA criptografadas com `safeStorage` (DPAPI no Windows); nunca vão para o log; o
+  relatório de diagnóstico remove pasta do usuário, nome e segredos.
+- A IA (desligada por padrão) recebe apenas o texto da transcrição do trecho.

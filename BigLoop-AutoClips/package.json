@@ -1,7 +1,7 @@
 {
   "name": "bigloop-autoclips",
-  "version": "0.1.0",
-  "description": "BigLoop AutoClips — transforma gravações longas em cortes curtos (Fase 1: importação, metadados e corte real via FFmpeg).",
+  "version": "0.2.0",
+  "description": "BigLoop AutoClips — transforma gravações longas em cortes curtos, legendados e prontos para redes sociais.",
   "private": true,
   "main": "./out/main/index.js",
   "author": "BigLoop",
@@ -52,7 +52,8 @@
         "from": "resources/bin",
         "to": "bin",
         "filter": [
-          "*.exe"
+          "*.exe",
+          "*.txt"
         ]
       }
     ],

@@ -13,6 +13,7 @@ Inspirado no fluxo do OpusClip — ferramenta própria, sem copiar código de te
 - `npm run dev` — app em modo desenvolvimento
 - `npm run typecheck` — TypeScript (main/preload e renderer)
 - `npm test` — Vitest (unitários + integração com FFmpeg real; integração é pulada se não houver FFmpeg)
+- `npm run test:e2e` — teste de ponta a ponta no Electron (Linux sem tela: `xvfb-run -a npm run test:e2e`)
 - `npm run build` — build de produção em `out/`
 - `npm run dist:win` — instalador NSIS (rodar no Windows)
 
@@ -27,3 +28,6 @@ Inspirado no fluxo do OpusClip — ferramenta própria, sem copiar código de te
 - Código de mídia em `src/main/media/` não importa `electron` — assim é testável com Vitest em Node puro.
 - Lógica pura (parse/format/args) fica em `src/shared/` e tem teste unitário.
 - Textos de interface em português do Brasil.
+- Comunicação interface ↔ main só pela API tipada em `src/shared/api.ts` (canais em `src/shared/ipc.ts`).
+- IA externa é opcional, paga e desligada por padrão; nunca envie vídeo/áudio, só texto.
+- Status de cada melhoria em `docs/MELHORIAS.md`: atualize ao mudar algo.

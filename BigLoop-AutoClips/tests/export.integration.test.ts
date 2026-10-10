@@ -144,6 +144,9 @@ describe.skipIf(!ffmpeg || !ffprobe)('Exportação com FFmpeg real', () => {
     const r = make({ mode: 'fast', nameTemplate: '{trecho}_{n}', subfolderPerSource: true }, { segmentName: 'Gol', sequence: 1, outputDir: join(dir, 'nomes') })
     const a = await exportOk(r)
     const b = await exportOk(r)
+    const tags = JSON.parse(spawnSync(resolveTool('ffprobe', '')!, ['-v', 'error', '-print_format', 'json', '-show_format', a.outputPath]).stdout.toString()).format.tags
+    expect(tags.title).toBe('Gol')
+    expect(tags.comment).toBe('Criado com BigLoop AutoClips')
     expect(a.outputPath).toBe(join(dir, 'nomes', 'fonte de teste', 'Gol_001.mp4'))
     expect(b.outputPath).toBe(join(dir, 'nomes', 'fonte de teste', 'Gol_001 (2).mp4'))
   })

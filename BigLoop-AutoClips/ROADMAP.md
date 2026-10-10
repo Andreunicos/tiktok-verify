@@ -1,61 +1,39 @@
 # Roadmap
 
-Legenda: ✅ feito e verificado · 🟡 parcial · ⏳ não iniciado
+Legenda: ✅ feito e testado aqui · 🟡 feito, falta testar no cenário real · ⏳ não iniciado
 
-## Fase 1 — Aplicativo básico e cortes reais ✅
-- ✅ Janela desktop e navegação (Cortar / Configurações)
-- ✅ Importar vídeo por seletor de arquivos e arrastar-e-soltar
-- ✅ Ler metadados via FFprobe
-- ✅ Definir início e fim manualmente (campos, botões, atalhos I/O, linha do tempo)
-- ✅ Executar FFmpeg e gerar MP4 real (modos preciso e rápido; com ou sem áudio)
-- ✅ Progresso, erros, cancelamento, abrir pasta de saída
-- **Critério de aceite:** importar vídeo de teste, criar corte, reproduzir e verificar áudio e imagem.
-  Verificado automaticamente (testes de integração + E2E no Electron) em Linux.
-  🟡 Falta confirmação manual no Windows.
+Fases do guia (`docs/Guia_BigLoop_AutoClips_Passo_a_Passo.pdf`). Detalhe item a item em
+[docs/MELHORIAS.md](docs/MELHORIAS.md).
 
-## Fase 2 — Transcrição ⏳
-- Avaliar faster-whisper (Python) vs. whisper.cpp (binário nativo, sem Python) no Windows
-- Texto com timestamps por palavra/frase
-- Selecionar fala → definir intervalo de corte
-- Correção manual da transcrição
-- Testar com vídeo curto, longo e áudio com ruído
+| Fase | Estado | Observação |
+|---|---|---|
+| 1 — App básico e cortes reais | ✅ | |
+| 2 — Transcrição | 🟡 | whisper.cpp integrado; testado com whisper simulado (download de modelos bloqueado aqui) |
+| 3 — Sugestões de melhores momentos | ✅ | nota explicável + aprendizado |
+| 4 — Legendas e formato vertical | ✅ | rastreamento de rosto **não** feito (recorte manual) |
+| 5 — Fila e OBS | 🟡 | fila ✅; OBS testado com servidor simulado |
+| 6 — Premiere | 🟡 | FCP XML/EDL gerados e validados; não importados num Premiere real; plugin UXP não feito |
+| 7 — Acabamento | 🟡 | erros, cancelamento, logs, privacidade ✅; instalador e Windows ⏳ |
 
-## Fase 3 — Sugestões de melhores momentos ⏳
-- Sinais: transcrição, pausas (silencedetect), mudanças de cena (scdetect)
-- Pontuação editorial explicável (sem promessa de viralização)
-- Remover duplicadas, configurar duração, mostrar o motivo de cada sugestão
+## Próximos passos (precisam de você / de um Windows)
 
-## Fase 4 — Legendas e formato vertical ⏳
-- SRT sincronizado; legenda incorporada ou arquivo separado
-- Presets 9:16, 16:9, 1:1 com recorte central e ajuste manual
-- Rastreamento de rosto só quando implementado e testado
-
-## Fase 5 — Fila e monitoramento do OBS ⏳
-- Fila persistente (SQLite) com estados aguardando/processando/concluído/erro
-- OBS WebSocket com autenticação (senha fora do repositório/logs)
-- Monitorar pasta de gravação; esperar o arquivo terminar; evitar duplicatas; liga/desliga
-
-## Fase 6 — Premiere Pro ⏳
-- Verificar versão e APIs UXP disponíveis
-- Plugin UXP ou pacote de intercâmbio (mídia + metadados)
-- Testar em cópia do projeto; documentar o que é automático e o que é manual
-
-## Fase 7 — Acabamento ⏳
-- Falhas de FFmpeg, vídeos corrompidos, disco cheio (parte já tratada na Fase 1)
-- Repetição de tarefas, logs, revisão de privacidade e `sandbox` do preload
-- Instalador Windows testado em ambiente limpo
+1. Rodar `npm install && npm run dev` no Windows e testar com uma gravação real do OBS.
+2. Instalar whisper.cpp + modelo e testar a transcrição real em português.
+3. Conectar no OBS real (senha) e testar marcadores e importação automática.
+4. Importar o XML no seu Premiere e conferir a sequência.
+5. `npm run dist:win` e testar o instalador num Windows limpo.
 
 ## Checklist de aceitação (do guia)
-- [ ] O aplicativo inicia no Windows *(inicia em Linux/Xvfb; Windows não testado)*
+- [ ] O aplicativo inicia no Windows *(inicia em Linux/Xvfb)*
 - [x] Importa um vídeo sem OBS conectado
 - [x] Lê metadados corretamente
 - [x] Gera um corte real com áudio e vídeo
-- [ ] Transcreve um trecho com timestamps
-- [ ] Gera legendas corrigíveis
-- [ ] Cria vídeo vertical e oferece prévia
-- [x] A lista de cortes mostra erros e progresso *(fila completa na Fase 5)*
-- [ ] Não processa uma gravação que ainda está em andamento
-- [ ] A integração OBS tem teste de conexão e autenticação
-- [ ] A integração Premiere foi testada ou sua limitação está documentada
+- [~] Transcreve um trecho com timestamps *(com whisper simulado)*
+- [x] Gera legendas corrigíveis
+- [x] Cria vídeo vertical e oferece prévia
+- [x] A fila mostra erros e progresso
+- [x] Não processa uma gravação que ainda está em andamento *(teste com arquivo crescendo)*
+- [~] A integração OBS tem teste de conexão e autenticação *(com OBS simulado)*
+- [~] A integração Premiere foi testada ou sua limitação está documentada *(documentada)*
 - [ ] O instalador foi testado em um ambiente limpo
 - [x] Os documentos descrevem o estado real do produto
