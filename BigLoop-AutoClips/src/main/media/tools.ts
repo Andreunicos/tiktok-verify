@@ -47,3 +47,39 @@ export function readVersion(toolPath: string): Promise<string> {
     })
   })
 }
+
+const HW_CANDIDATES = ['h264_nvenc', 'hevc_nvenc', 'h264_qsv', 'hevc_qsv', 'h264_amf', 'hevc_amf'] as const
+
+/**
+ * Detecta encoders de placa de vídeo que realmente funcionam: o FFmpeg pode listar
+ * NVENC/QSV/AMF mesmo sem a placa, então cada um é testado com um encode minúsculo.
+ */
+export async function detectHardwareEncoders(ffmpeg: string): Promise<string[]> {
+  const listed = await new Promise<string>((resolve) => {
+    const child = spawn(ffmpeg, ['-hide_banner', '-encoders'], { windowsHide: true })
+    let out = ''
+    child.stdout.on('data', (d) => (out += d))
+    child.on('error', () => resolve(''))
+    child.on('close', () => resolve(out))
+  })
+  const present = HW_CANDIDATES.filter((e) => new RegExp(`\\s${e}\\s`).test(listed))
+  const works = await Promise.all(
+    present.map(
+      (enc) =>
+        new Promise<boolean>((resolve) => {
+          const child = spawn(
+            ffmpeg,
+            ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=black:s=256x256:d=0.2', '-c:v', enc, '-f', 'null', '-'],
+            { windowsHide: true }
+          )
+          const timer = setTimeout(() => child.kill(), 8000)
+          child.on('error', () => resolve(false))
+          child.on('close', (code) => {
+            clearTimeout(timer)
+            resolve(code === 0)
+          })
+        })
+    )
+  )
+  return present.filter((_, i) => works[i])
+}

@@ -1,0 +1,185 @@
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { CutCancelledError, startExport } from '../src/main/media/export'
+import { probeMedia } from '../src/main/media/probe'
+import { detectHardwareEncoders, resolveTool } from '../src/main/media/tools'
+import type { CutRequest, ExportOptions } from '../src/shared/types'
+import { makeVideo, req } from './helpers'
+
+const ffmpeg = resolveTool('ffmpeg', '')
+const ffprobe = resolveTool('ffprobe', '')
+const dir = join(__dirname, '.tmp-export')
+const source = join(dir, 'fonte de teste.mp4')
+const twoTracks = join(dir, 'duas faixas.mp4')
+
+function make(options: Partial<ExportOptions>, partial: Partial<CutRequest> = {}): CutRequest {
+  return req(
+    {
+      inputPath: source,
+      outputDir: join(dir, 'saida'),
+      ranges: [{ startSec: 2, endSec: 5.5 }],
+      source: { durationSec: 8, width: 640, height: 360, fps: 30, audioTracks: 1 },
+      ...partial
+    },
+    options
+  )
+}
+
+async function exportOk(r: CutRequest) {
+  const progress: number[] = []
+  const handle = await startExport(r, { ffmpegPath: ffmpeg!, onProgress: (_s, ratio) => progress.push(ratio), lowPriority: true })
+  const result = await handle.done
+  expect(existsSync(result.outputPath)).toBe(true)
+  expect(progress.at(-1)).toBe(1)
+  return { ...result, meta: await probeMedia(ffprobe!, result.outputPath) }
+}
+
+function decodesCleanly(path: string) {
+  const r = spawnSync(ffmpeg!, ['-v', 'error', '-i', path, '-f', 'null', '-'])
+  expect(r.status).toBe(0)
+  expect(r.stderr.toString().trim()).toBe('')
+}
+
+describe.skipIf(!ffmpeg || !ffprobe)('Exportação com FFmpeg real', () => {
+  beforeAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    makeVideo(ffmpeg!, source, 8)
+    makeVideo(ffmpeg!, twoTracks, 4, { tracks: 2 })
+  })
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('lê metadados e faixas de áudio', async () => {
+    const m = await probeMedia(ffprobe!, twoTracks)
+    expect(m.video).toMatchObject({ codec: 'h264', width: 640, height: 360, fps: 30 })
+    expect(m.audioTracks).toHaveLength(2)
+  })
+
+  it('rejeita arquivo corrompido e inexistente', async () => {
+    const bad = join(dir, 'corrompido.mp4')
+    writeFileSync(bad, Buffer.from('isto não é um vídeo'.repeat(50)))
+    await expect(probeMedia(ffprobe!, bad)).rejects.toThrow(/não conseguiu ler/)
+    await expect(probeMedia(ffprobe!, join(dir, 'nada.mp4'))).rejects.toThrow(/não encontrado/)
+  })
+
+  it.each(['precise', 'fast'] as const)('corte MP4 reproduzível (modo %s)', async (mode) => {
+    const { outputPath, meta } = await exportOk(make({ mode }, { outputDir: join(dir, mode) }))
+    expect(outputPath).toMatch(/fonte de teste_corte_00h00m02s000-00h00m05s500\.mp4$/)
+    expect(meta.video?.codec).toBe('h264')
+    expect(meta.audio?.codec).toBe('aac')
+    expect(Math.abs(meta.durationSec - 3.5)).toBeLessThan(mode === 'precise' ? 0.1 : 2.1)
+    decodesCleanly(outputPath)
+  })
+
+  it.each([
+    ['9:16', 'crop', 1080, 1920],
+    ['1:1', 'blur', 1080, 1080],
+    ['4:5', 'pad', 1080, 1350],
+    ['16:9', 'crop', 1920, 1080]
+  ] as const)('formato %s (%s) gera %ix%i', async (aspect, fit, w, h) => {
+    const { meta, outputPath } = await exportOk(make({ aspect, fit, quality: 'small' }, { outputDir: join(dir, `asp-${aspect.replace(':', 'x')}`) }))
+    expect(meta.video).toMatchObject({ width: w, height: h })
+    decodesCleanly(outputPath)
+  })
+
+  it('une vários intervalos, muda velocidade e aplica fades + normalização', async () => {
+    const { meta } = await exportOk(
+      make(
+        { speed: 2, fadeInSec: 0.3, fadeOutSec: 0.3, normalizeAudio: true },
+        { ranges: [{ startSec: 0, endSec: 2 }, { startSec: 4, endSec: 6 }], outputDir: join(dir, 'multi') }
+      )
+    )
+    expect(Math.abs(meta.durationSec - 2)).toBeLessThan(0.1)
+    expect(meta.audio?.sampleRate).toBe(48000)
+  })
+
+  it('mistura duas faixas de áudio ou escolhe a segunda', async () => {
+    const base = { source: { durationSec: 4, width: 640, height: 360, fps: 30, audioTracks: 2 }, inputPath: twoTracks, ranges: [{ startSec: 0, endSec: 2 }] }
+    const mix = await exportOk(make({ audioTrack: 'mix' }, { ...base, outputDir: join(dir, 'mix') }))
+    expect(mix.meta.audioTracks).toHaveLength(1)
+    const second = await exportOk(make({ audioTrack: 1 }, { ...base, outputDir: join(dir, 'faixa2') }))
+    expect(second.meta.audioTracks).toHaveLength(1)
+  })
+
+  it('grava legendas no vídeo e gera SRT + capa', async () => {
+    const cues = [
+      { id: 'a', startSec: 2, endSec: 3.5, text: 'Olá pessoal', words: [{ startSec: 2, endSec: 2.6, text: 'Olá' }, { startSec: 2.6, endSec: 3.5, text: 'pessoal' }] },
+      { id: 'b', startSec: 4, endSec: 5, text: 'segunda {fala}' }
+    ]
+    const { outputPath, extraFiles, meta } = await exportOk(
+      make({ aspect: '9:16', subtitles: 'both', thumbnail: true, quality: 'small' }, { cues, outputDir: join(dir, 'legendas') })
+    )
+    expect(meta.video).toMatchObject({ width: 1080, height: 1920 })
+    const srt = extraFiles.find((f) => f.endsWith('.srt'))!
+    expect(readFileSync(srt, 'utf8')).toContain('00:00:00,000 --> 00:00:01,500\nOlá pessoal')
+    const jpg = extraFiles.find((f) => f.endsWith('.jpg'))!
+    expect(existsSync(jpg)).toBe(true)
+    decodesCleanly(outputPath)
+  })
+
+  it.each(['mp3', 'wav', 'gif'] as const)('exporta %s', async (format) => {
+    const { outputPath, meta } = await exportOk(make({ format, includeAudio: format !== 'gif' }, { outputDir: join(dir, format) }))
+    expect(outputPath.endsWith(`.${format}`)).toBe(true)
+    if (format === 'gif') {
+      expect(meta.video?.codec).toBe('gif')
+      expect(meta.audio).toBeNull()
+    } else {
+      expect(meta.video).toBeNull()
+      expect(meta.audio?.codec).toBe(format === 'mp3' ? 'mp3' : 'pcm_s16le')
+    }
+  })
+
+  it('respeita limite de tamanho', async () => {
+    makeVideo(ffmpeg!, join(dir, 'grande.mp4'), 6, { size: '1280x720' })
+    const { outputPath } = await exportOk(
+      make({ maxSizeMB: 0.5 }, { inputPath: join(dir, 'grande.mp4'), ranges: [{ startSec: 0, endSec: 6 }], source: { durationSec: 6, width: 1280, height: 720, fps: 30, audioTracks: 1 }, outputDir: join(dir, 'limite') })
+    )
+    const size = readFileSync(outputPath).length
+    expect(size).toBeLessThan(0.5 * 1024 * 1024 * 1.15)
+  })
+
+  it('modelo de nome, subpasta e sufixo para não sobrescrever', async () => {
+    const r = make({ mode: 'fast', nameTemplate: '{trecho}_{n}', subfolderPerSource: true }, { segmentName: 'Gol', sequence: 1, outputDir: join(dir, 'nomes') })
+    const a = await exportOk(r)
+    const b = await exportOk(r)
+    expect(a.outputPath).toBe(join(dir, 'nomes', 'fonte de teste', 'Gol_001.mp4'))
+    expect(b.outputPath).toBe(join(dir, 'nomes', 'fonte de teste', 'Gol_001 (2).mp4'))
+  })
+
+  it('sem áudio gera arquivo só com vídeo', async () => {
+    const { meta } = await exportOk(make({ includeAudio: false }, { baseName: 'mudo', outputDir: join(dir, 'mudo') }))
+    expect(meta.audio).toBeNull()
+    expect(meta.fileName).toBe('mudo.mp4')
+  })
+
+  it('rejeita pedido inválido antes de chamar o FFmpeg', async () => {
+    await expect(startExport(make({}, { ranges: [{ startSec: 5, endSec: 9 }] }), { ffmpegPath: ffmpeg! })).rejects.toThrow(/depois do fim/)
+    await expect(startExport(make({ mode: 'fast', aspect: '9:16' }), { ffmpegPath: ffmpeg! })).rejects.toThrow(/modo rápido/)
+  })
+
+  it('recusa quando falta espaço em disco', async () => {
+    await expect(startExport(make({}), { ffmpegPath: ffmpeg!, minFreeBytes: 1e18 })).rejects.toThrow(/Pouco espaço/)
+  })
+
+  it('encoder indisponível gera mensagem clara', async () => {
+    const hw = await detectHardwareEncoders(ffmpeg!)
+    const missing = (['h264_nvenc', 'h264_qsv', 'h264_amf'] as const).find((e) => !hw.includes(e))
+    if (!missing) return
+    const handle = await startExport(make({ encoder: missing }, { outputDir: join(dir, 'hw') }), { ffmpegPath: ffmpeg! })
+    await expect(handle.done).rejects.toThrow(/encoder|FFmpeg falhou/)
+  })
+
+  it('cancelamento encerra o FFmpeg e apaga o arquivo parcial', async () => {
+    const long = join(dir, 'longo.mp4')
+    makeVideo(ffmpeg!, long, 30, { size: '1280x720' })
+    const handle = await startExport(
+      make({ aspect: '9:16', fit: 'blur' }, { inputPath: long, ranges: [{ startSec: 0, endSec: 30 }], source: { durationSec: 30, width: 1280, height: 720, fps: 30, audioTracks: 1 }, outputDir: join(dir, 'cancel') }),
+      { ffmpegPath: ffmpeg! }
+    )
+    setTimeout(() => handle.cancel(), 300)
+    await expect(handle.done).rejects.toBeInstanceOf(CutCancelledError)
+    expect(existsSync(handle.outputPath)).toBe(false)
+  })
+})
