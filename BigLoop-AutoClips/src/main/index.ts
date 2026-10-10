@@ -1,38 +1,120 @@
-import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import os from 'node:os'
+import { basename, dirname, extname, join } from 'node:path'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  globalShortcut,
+  ipcMain,
+  Menu,
+  nativeImage,
+  Notification,
+  safeStorage,
+  shell,
+  Tray,
+  type IpcMainInvokeEvent
+} from 'electron'
+import type { FileKind } from '../shared/api'
+import { removeFillers } from '../shared/fillers'
+import { buildEdl, buildFcpXml } from '../shared/interchange'
 import { IPC } from '../shared/ipc'
-import type { AppSettings, CutRequest, Result, ToolStatus } from '../shared/types'
-import { initLogger, log } from './logger'
-import { allowMediaPath, handleMediaProtocol, registerMediaSchemePrivileges } from './mediaProtocol'
-import { CutCancelledError, startCut, type CutHandle } from './media/cut'
+import { formatSrt, formatVtt, parseSubtitles } from '../shared/subtitles'
+import { learnWeights, suggestClips } from '../shared/suggest'
+import type { AppSettings, CutRequest, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
+import { AiError, generateSocialCopy, translateCues } from './ai'
+import { redact } from './diagnostics'
+import { readJson, writeJsonAtomic } from './jsonFile'
+import { initLogger, log, logPath } from './logger'
+import { allowMediaDir, allowMediaPath, handleMediaProtocol, registerMediaSchemePrivileges } from './mediaProtocol'
+import { analyzeMedia, generateThumbnails } from './media/analyze'
+import { startExport } from './media/export'
 import { probeMedia } from './media/probe'
-import { readVersion, resolveTool } from './media/tools'
-import { SettingsStore } from './settings'
+import { detectHardwareEncoders, readVersion, resolveTool } from './media/tools'
+import { transcribe } from './media/transcribe'
+import { ObsManager } from './obs'
+import { ProjectStore } from './projects'
+import { JobQueue } from './queue'
+import { defaultSettings, SettingsStore } from './settings'
+import { FolderWatcher, VIDEO_EXTENSIONS } from './watcher'
 
 registerMediaSchemePrivileges()
 
-const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'mov', 'flv', 'ts', 'm4v', 'webm', 'avi']
-const jobs = new Map<string, CutHandle>()
-const durations = new Map<string, number>()
+// Uma instância só: abrir de novo traz a janela existente para frente.
+if (!app.requestSingleInstanceLock()) app.quit()
+
 let settings: SettingsStore
+let projects: ProjectStore
+let queue: JobQueue
+let obs: ObsManager
+let watcher: FolderWatcher | null = null
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let quitting = false
+let hwEncoders: VideoEncoder[] | null = null
+const tasks = new Map<string, AbortController>()
+const watchState: WatchStatus = { enabled: false, dir: '', pending: [], lastImported: null, error: null }
 
-/** Pasta "resources/bin" do instalador, onde um FFmpeg pode ser empacotado. */
-const bundledBinDir = () =>
-  app.isPackaged ? join(process.resourcesPath, 'bin') : join(app.getAppPath(), 'resources', 'bin')
-
+const bundledBinDir = () => (app.isPackaged ? join(process.resourcesPath, 'bin') : join(app.getAppPath(), 'resources', 'bin'))
 const ffmpegPath = () => resolveTool('ffmpeg', settings.get().ffmpegPath, bundledBinDir())
 const ffprobePath = () => resolveTool('ffprobe', settings.get().ffprobePath, bundledBinDir())
-
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err))
+const ok = <T>(value: T): Result<T> => ({ ok: true, value })
+const fail = (err: unknown): Result<never> => ({ ok: false, error: errorMessage(err) })
+
+function send(channel: string, payload: unknown): void {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+}
+
+function requireFfmpeg(): string {
+  const p = ffmpegPath()
+  if (!p) throw new Error('FFmpeg não encontrado. Instale o FFmpeg ou configure o caminho em Configurações.')
+  return p
+}
+
+function requireProject(id: string): Project {
+  const p = projects.get(id)
+  if (!p) throw new Error('Projeto não encontrado.')
+  return p
+}
+
+// ───────────── Segredos (senha do OBS, chave da IA) ─────────────
+
+function decryptSecret(enc: string): string {
+  if (!enc) return ''
+  try {
+    return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(enc, 'base64')) : ''
+  } catch {
+    log('warn', 'Não foi possível ler um segredo salvo; configure de novo.')
+    return ''
+  }
+}
+
+// ───────────── Janela, bandeja e atalhos ─────────────
+
+interface WindowState {
+  x?: number
+  y?: number
+  width: number
+  height: number
+  maximized: boolean
+}
+
+function windowStateFile() {
+  return join(app.getPath('userData'), 'janela.json')
+}
 
 function createWindow(): void {
+  const st = readJson<WindowState>(windowStateFile(), { width: 1360, height: 860, maximized: false })
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 960,
-    minHeight: 640,
+    x: st.x,
+    y: st.y,
+    width: st.width,
+    height: st.height,
+    minWidth: 1000,
+    minHeight: 660,
     title: 'BigLoop AutoClips',
     backgroundColor: '#111318',
     show: false,
@@ -40,106 +122,564 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   })
+  if (st.maximized) mainWindow.maximize()
   mainWindow.once('ready-to-show', () => mainWindow?.show())
-  // Links externos abrem no navegador, nunca dentro do app.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) void shell.openExternal(url)
+    if (/^https:/.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    if (!url.startsWith(process.env.ELECTRON_RENDERER_URL ?? 'file:')) e.preventDefault()
+  })
+  const saveState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const b = mainWindow.getNormalBounds()
+    writeJsonAtomic(windowStateFile(), { ...b, maximized: mainWindow.isMaximized() })
+  }
+  mainWindow.on('close', async (e) => {
+    saveState()
+    if (quitting) return
+    if (settings.get().minimizeToTray && tray) {
+      e.preventDefault()
+      mainWindow?.hide()
+      return
+    }
+    if (queue.activeCount > 0 || queue.state().jobs.some((j) => j.status === 'aguardando')) {
+      e.preventDefault()
+      const { response } = await dialog.showMessageBox(mainWindow!, {
+        type: 'warning',
+        buttons: ['Continuar no app', 'Fechar mesmo assim'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Cortes em andamento',
+        message: 'Há cortes em andamento ou na fila.',
+        detail: 'Se fechar agora, os cortes em andamento são cancelados e refeitos na próxima vez que o app abrir.'
+      })
+      if (response === 1) {
+        quitting = true
+        app.quit()
+      }
+    }
   })
   if (process.env.ELECTRON_RENDERER_URL) void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
-function registerIpc(): void {
-  ipcMain.handle(IPC.pickVideo, async () => {
-    const res = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Importar vídeo',
-      properties: ['openFile'],
-      filters: [
-        { name: 'Vídeos', extensions: VIDEO_EXTENSIONS },
-        { name: 'Todos os arquivos', extensions: ['*'] }
-      ]
-    })
-    return res.canceled ? null : res.filePaths[0]
-  })
+function showWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+  else {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+}
 
-  ipcMain.handle(IPC.probe, async (_e, filePath: string): Promise<Result<unknown>> => {
-    const probe = ffprobePath()
-    if (!probe) return { ok: false, error: 'ffprobe não encontrado. Instale o FFmpeg ou configure o caminho em Configurações.' }
-    try {
-      const meta = await probeMedia(probe, filePath)
-      allowMediaPath(filePath)
-      durations.set(filePath, meta.durationSec)
-      log('info', 'Mídia importada', { file: meta.fileName, duration: meta.durationSec })
-      return { ok: true, value: meta }
-    } catch (err) {
-      log('error', 'Falha ao ler metadados', err)
-      return { ok: false, error: errorMessage(err) }
-    }
-  })
+const TRAY_ICON =
+  'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAQklEQVR4nGNgGLTg/38GBgYGBob/DAwM/xkYGP4zMDD8Z2Bg+M/AwPCfgYHhPwMDw38GBob/DAwM/xkYGP4zMDAAAKqSB/kxyOw0AAAAAElFTkSuQmCC'
 
-  ipcMain.handle(IPC.startCut, async (event, req: CutRequest): Promise<Result<{ jobId: string }>> => {
-    const ffmpeg = ffmpegPath()
-    if (!ffmpeg) return { ok: false, error: 'FFmpeg não encontrado. Instale o FFmpeg ou configure o caminho em Configurações.' }
-    const jobId = randomUUID()
-    const sender = event.sender
-    try {
-      const handle = await startCut(req, {
-        ffmpegPath: ffmpeg,
-        sourceDurationSec: durations.get(req.inputPath) ?? 0,
-        onProgress: (processedSec, ratio) => {
-          if (!sender.isDestroyed()) sender.send(IPC.cutProgress, { jobId, ratio, processedSec })
-        }
+function updateTray(): void {
+  if (!tray) return
+  const s = queue.state()
+  const running = s.jobs.filter((j) => j.status === 'processando').length
+  const waiting = s.jobs.filter((j) => j.status === 'aguardando').length
+  tray.setToolTip(`BigLoop AutoClips${running || waiting ? ` — ${running} processando, ${waiting} na fila` : ''}`)
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Mostrar BigLoop AutoClips', click: showWindow },
+      { type: 'separator' },
+      s.paused ? { label: 'Retomar fila', click: () => queue.resume() } : { label: 'Pausar fila', click: () => queue.pause() },
+      { label: 'Marcar momento no OBS', enabled: obs?.status.state === 'conectado' && obs.status.recording, click: () => void addObsMarker() },
+      { type: 'separator' },
+      { label: 'Sair', click: () => ((quitting = true), app.quit()) }
+    ])
+  )
+}
+
+function createTray(): void {
+  try {
+    tray = new Tray(nativeImage.createFromBuffer(Buffer.from(TRAY_ICON, 'base64')))
+    tray.on('click', showWindow)
+    updateTray()
+  } catch (err) {
+    log('warn', 'Bandeja do sistema indisponível', err)
+  }
+}
+
+function registerShortcut(): void {
+  globalShortcut.unregisterAll()
+  const s = settings.get()
+  if (!s.obsEnabled || !s.markerShortcut) return
+  try {
+    const okReg = globalShortcut.register(s.markerShortcut, () => void addObsMarker())
+    if (!okReg) log('warn', `Atalho ${s.markerShortcut} já está em uso por outro programa.`)
+  } catch (err) {
+    log('warn', 'Atalho de marcador inválido', err)
+  }
+}
+
+async function addObsMarker(): Promise<Result<number>> {
+  try {
+    const t = await obs.addMarker()
+    send(IPC.evShortcut, 'marker')
+    if (Notification.isSupported()) new Notification({ title: 'Marcador criado', body: `Momento marcado em ${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`, silent: true }).show()
+    log('info', 'Marcador OBS', { t })
+    return ok(t)
+  } catch (err) {
+    return fail(err)
+  }
+}
+
+// ───────────── Fila de exportação ─────────────
+
+function setupQueue(): void {
+  queue = new JobQueue(
+    join(app.getPath('userData'), 'fila.json'),
+    async (job, report) => {
+      const handle = await startExport(job.request, {
+        ffmpegPath: requireFfmpeg(),
+        lowPriority: settings.get().lowPriority,
+        onProgress: (_s, ratio, eta) => report(ratio, eta)
       })
-      jobs.set(jobId, handle)
-      log('info', 'Corte iniciado', { jobId, ...req })
-      handle.done
-        .then(({ outputPath, elapsedMs }) => {
-          log('info', 'Corte concluído', { jobId, outputPath, elapsedMs })
-          if (!sender.isDestroyed())
-            sender.send(IPC.cutDone, {
-              jobId,
-              ok: true,
-              value: { jobId, outputPath, elapsedMs, durationSec: req.endSec - req.startSec }
-            })
-        })
-        .catch((err) => {
-          const cancelled = err instanceof CutCancelledError
-          log(cancelled ? 'warn' : 'error', cancelled ? 'Corte cancelado' : 'Corte falhou', err)
-          if (!sender.isDestroyed()) sender.send(IPC.cutDone, { jobId, ok: false, error: errorMessage(err) })
-        })
-        .finally(() => jobs.delete(jobId))
-      return { ok: true, value: { jobId } }
-    } catch (err) {
-      log('error', 'Corte rejeitado', err)
-      return { ok: false, error: errorMessage(err) }
+      return handle
+    },
+    { concurrency: settings.get().concurrency }
+  )
+  queue.on('change', (s) => {
+    send(IPC.evQueue, s)
+    updateTray()
+    updateTaskbar()
+  })
+  queue.on('progress', (j: Job) => {
+    send(IPC.evJobProgress, j)
+    updateTaskbar()
+  })
+  queue.on('finished', (j: Job) => {
+    log(j.status === 'concluído' ? 'info' : 'error', `Corte ${j.status}`, { id: j.id, out: j.outputPath, error: j.error })
+    if (j.status === 'concluído') [j.outputPath!, ...(j.extraFiles ?? [])].forEach(allowMediaPath)
+    if (settings.get().notifyOnDone && Notification.isSupported() && (j.status === 'concluído' || j.status === 'erro')) {
+      const n = new Notification({
+        title: j.status === 'concluído' ? 'Corte pronto' : 'Corte falhou',
+        body: j.status === 'concluído' ? basename(j.outputPath!) : (j.error ?? '').slice(0, 180)
+      })
+      n.on('click', () => (j.outputPath ? shell.showItemInFolder(j.outputPath) : showWindow()))
+      n.show()
     }
   })
+  queue.on('error', (err) => log('error', 'Falha ao salvar a fila', err))
+  for (const j of queue.state().jobs) [j.outputPath, ...(j.extraFiles ?? [])].forEach((f) => f && allowMediaPath(f))
+}
 
-  ipcMain.handle(IPC.cancelCut, (_e, jobId: string) => jobs.get(jobId)?.cancel())
+function updateTaskbar(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const running = queue.state().jobs.filter((j) => j.status === 'processando')
+  if (running.length === 0) mainWindow.setProgressBar(-1)
+  else mainWindow.setProgressBar(running.reduce((s, j) => s + j.ratio, 0) / running.length)
+}
 
-  ipcMain.handle(IPC.getSettings, () => settings.get())
-  ipcMain.handle(IPC.saveSettings, (_e, patch: Partial<AppSettings>) => settings.update(patch))
+// ───────────── Importação (manual, pasta e OBS) ─────────────
 
-  ipcMain.handle(IPC.chooseOutputDir, async () => {
+async function openMedia(path: string, origin: Project['origin']): Promise<{ meta: MediaMetadata; project: Project }> {
+  const probe = ffprobePath()
+  if (!probe) throw new Error('ffprobe não encontrado. Instale o FFmpeg ou configure o caminho em Configurações.')
+  const meta = await probeMedia(probe, path)
+  allowMediaPath(path)
+  const project = projects.open(meta, origin)
+  allowMediaDir(projects.cacheDir(project.id))
+  log('info', 'Mídia aberta', { file: meta.fileName, origin, duration: meta.durationSec })
+  return { meta, project }
+}
+
+async function importInBackground(path: string, origin: 'pasta' | 'obs', markers: { timeSec: number; label: string }[] = []): Promise<void> {
+  try {
+    const { meta, project } = await openMedia(path, origin)
+    if (markers.length) projects.addMarkers(project.id, markers.map((m) => ({ ...m, source: 'obs' as const })))
+    watchState.lastImported = path
+    send(IPC.evWatch, { ...watchState, pending: watcher?.pending ?? [] })
+    send(IPC.evLibrary, { projectId: project.id, reason: origin })
+    if (Notification.isSupported())
+      new Notification({ title: 'Nova gravação importada', body: `${meta.fileName}${markers.length ? ` · ${markers.length} marcador(es)` : ''}` }).show()
+    if (settings.get().watchAutoAnalyze) {
+      const analysis = await analyzeMedia(meta, { ffmpegPath: requireFfmpeg(), detectScenes: true })
+      projects.saveAnalysis(project.id, analysis)
+      const fresh = projects.get(project.id)!
+      const s = settings.get()
+      const suggestions = suggestClips({ analysis, cues: fresh.transcript?.cues, options: s.suggestion, weights: s.learnedWeights })
+      projects.update(project.id, { suggestions })
+      send(IPC.evLibrary, { projectId: project.id, reason: origin })
+    }
+  } catch (err) {
+    log('error', `Falha ao importar ${path}`, err)
+    watchState.error = errorMessage(err)
+    send(IPC.evWatch, watchState)
+  }
+}
+
+async function restartWatcher(): Promise<void> {
+  watcher?.stop()
+  watcher = null
+  const s = settings.get()
+  const dir = s.watchDir || (obs?.status.recordDir ?? '')
+  Object.assign(watchState, { enabled: s.watchEnabled, dir, pending: [], error: null })
+  if (s.watchEnabled && dir) {
+    if (!existsSync(dir)) watchState.error = 'A pasta monitorada não existe.'
+    else {
+      watcher = new FolderWatcher({ dir, isKnown: (p) => !!projects.findByPath(p) })
+      watcher.on('pending', () => send(IPC.evWatch, { ...watchState, pending: watcher?.pending ?? [] }))
+      watcher.on('ready', (file: string) => void importInBackground(file, 'pasta'))
+      await watcher.start()
+      log('info', 'Monitorando pasta', { dir })
+    }
+  } else if (s.watchEnabled) watchState.error = 'Escolha a pasta de gravações (ou conecte o OBS para usar a pasta dele).'
+  send(IPC.evWatch, watchState)
+}
+
+function setupObs(): void {
+  obs = new ObsManager(() => {
+    const s = settings.get()
+    return { host: s.obsHost, port: s.obsPort, password: decryptSecret(s.obsPasswordEnc) }
+  })
+  obs.on('status', (st) => {
+    send(IPC.evObs, st)
+    updateTray()
+    if (st.state === 'conectado' && settings.get().watchEnabled && !settings.get().watchDir && st.recordDir && watchState.dir !== st.recordDir) void restartWatcher()
+  })
+  obs.on('recordingFinished', ({ path, markers }: { path: string; markers: { timeSec: number; label: string }[] }) => {
+    log('info', 'OBS terminou a gravação', { path, markers: markers.length })
+    if (watcher) watcher.markFinished(path)
+    // Importa direto: o OBS já informou que o arquivo está fechado. Espera alguns segundos pelo flush do disco.
+    setTimeout(() => {
+      const existing = projects.findByPath(path)
+      if (existing) {
+        if (markers.length) projects.addMarkers(existing.id, markers.map((m) => ({ ...m, source: 'obs' as const })))
+        send(IPC.evLibrary, { projectId: existing.id, reason: 'marcador' })
+      } else void importInBackground(path, 'obs', markers)
+    }, 3000)
+  })
+  if (settings.get().obsEnabled) obs.start()
+}
+
+// ───────────── IPC ─────────────
+
+const FILE_FILTERS: Record<FileKind, Electron.FileFilter[]> = {
+  video: [{ name: 'Vídeos', extensions: VIDEO_EXTENSIONS }, { name: 'Todos os arquivos', extensions: ['*'] }],
+  subtitle: [{ name: 'Legendas', extensions: ['srt', 'vtt'] }],
+  executable: process.platform === 'win32' ? [{ name: 'Programas', extensions: ['exe'] }] : [{ name: 'Todos os arquivos', extensions: ['*'] }],
+  model: [{ name: 'Modelos Whisper (ggml)', extensions: ['bin'] }]
+}
+
+type Handler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
+const handle = (channel: string, fn: Handler) => ipcMain.handle(channel, fn)
+
+function registerIpc(): void {
+  handle(IPC.pickFile, async (_e, kind: FileKind) => {
+    const s = settings.get()
     const res = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Pasta de saída dos cortes',
-      defaultPath: settings.get().outputDir,
-      properties: ['openDirectory', 'createDirectory']
+      properties: ['openFile'],
+      filters: FILE_FILTERS[kind] ?? [],
+      defaultPath: kind === 'video' ? s.lastImportDir || undefined : undefined
     })
+    if (res.canceled) return null
+    if (kind === 'video') settings.update({ lastImportDir: dirname(res.filePaths[0]) })
+    return res.filePaths[0]
+  })
+  handle(IPC.pickDir, async (_e, title: string, current?: string) => {
+    const res = await dialog.showOpenDialog(mainWindow!, { title, defaultPath: current, properties: ['openDirectory', 'createDirectory'] })
     return res.canceled ? null : res.filePaths[0]
   })
 
-  ipcMain.handle(IPC.openFolder, async (_e, dir: string) => {
-    const err = await shell.openPath(dir)
-    if (err) log('warn', 'Não foi possível abrir a pasta', { dir, err })
+  handle(IPC.openMedia, async (_e, path: string) => {
+    try {
+      return ok(await openMedia(path, 'manual'))
+    } catch (err) {
+      log('error', 'Falha ao abrir mídia', err)
+      return fail(err)
+    }
   })
-  ipcMain.handle(IPC.showInFolder, (_e, file: string) => shell.showItemInFolder(file))
 
-  ipcMain.handle(IPC.toolStatus, async (): Promise<ToolStatus> => {
+  handle(IPC.listProjects, () => projects.list())
+  handle(IPC.getProject, (_e, id: string) => {
+    const p = projects.get(id)
+    if (p) {
+      allowMediaPath(p.path)
+      allowMediaDir(projects.cacheDir(p.id))
+    }
+    return p
+  })
+  handle(IPC.updateProject, (_e, id: string, patch: Partial<Project>) => {
+    const allowed: Partial<Project> = {}
+    for (const k of ['segments', 'markers', 'transcript', 'suggestions'] as const) if (k in patch) (allowed as any)[k] = patch[k]
+    return projects.update(id, allowed)
+  })
+  handle(IPC.removeProject, (_e, id: string) => projects.remove(id))
+
+  handle(IPC.analyze, async (_e, projectId: string, taskId: string, opts: { audioTrack: number; scenes: boolean }) => {
+    const ctrl = new AbortController()
+    tasks.set(taskId, ctrl)
+    try {
+      const p = requireProject(projectId)
+      const meta = await probeMedia(ffprobePath()!, p.path)
+      const analysis = await analyzeMedia(meta, {
+        ffmpegPath: requireFfmpeg(),
+        audioTrack: opts.audioTrack,
+        detectScenes: opts.scenes,
+        signal: ctrl.signal,
+        onProgress: (stage, ratio) => send(IPC.evTaskProgress, { taskId, label: `Analisando ${stage}`, ratio })
+      })
+      projects.saveAnalysis(projectId, analysis)
+      return ok(analysis)
+    } catch (err) {
+      return fail(err)
+    } finally {
+      tasks.delete(taskId)
+    }
+  })
+  handle(IPC.getAnalysis, (_e, id: string) => projects.getAnalysis(id))
+  handle(IPC.thumbnails, async (_e, projectId: string, count: number) => {
+    try {
+      const p = requireProject(projectId)
+      const dir = join(projects.cacheDir(p.id), `thumbs-${count}`)
+      allowMediaDir(projects.cacheDir(p.id))
+      const list = await generateThumbnails(requireFfmpeg(), p.path, p.durationSec, Math.min(200, Math.max(1, count)), dir)
+      return ok(list.map((t) => ({ timeSec: t.timeSec, url: `bigloop-media://local/?p=${encodeURIComponent(t.file)}` })))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.cancelTask, (_e, taskId: string) => tasks.get(taskId)?.abort())
+
+  handle(IPC.suggest, (_e, projectId: string, options) => {
+    try {
+      const p = requireProject(projectId)
+      const analysis = projects.getAnalysis(projectId)
+      if (!analysis) throw new Error('Analise o vídeo antes de pedir sugestões.')
+      settings.update({ suggestion: options })
+      const previous = new Map(p.suggestions.map((s) => [s.id, s.status]))
+      const suggestions = suggestClips({ analysis, cues: p.transcript?.cues, options, weights: settings.get().learnedWeights }).map((s) => ({ ...s, status: previous.get(s.id) }))
+      projects.update(projectId, { suggestions })
+      return ok(suggestions)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.rateSuggestion, (_e, projectId: string, suggestionId: string, approved: boolean) => {
+    try {
+      const p = requireProject(projectId)
+      const s = p.suggestions.find((x) => x.id === suggestionId)
+      if (!s) throw new Error('Sugestão não encontrada.')
+      settings.update({ learnedWeights: learnWeights(settings.get().learnedWeights, s.features, approved) })
+      return ok(projects.update(projectId, { suggestions: p.suggestions.map((x) => (x.id === suggestionId ? { ...x, status: approved ? 'aprovada' : 'rejeitada' } : x)) })!)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  handle(IPC.transcribe, async (_e, projectId: string, taskId: string, opts: { audioTrack: number; range?: { startSec: number; endSec: number } }) => {
+    const ctrl = new AbortController()
+    tasks.set(taskId, ctrl)
+    try {
+      const p = requireProject(projectId)
+      const s = settings.get()
+      const t = await transcribe(p.path, {
+        ffmpegPath: requireFfmpeg(),
+        whisperPath: s.whisperPath,
+        modelPath: s.whisperModelPath,
+        language: s.whisperLanguage,
+        threads: s.whisperThreads,
+        audioTrack: opts.audioTrack,
+        range: opts.range,
+        signal: ctrl.signal,
+        onProgress: (stage, ratio) => send(IPC.evTaskProgress, { taskId, label: stage === 'transcrevendo' ? 'Transcrevendo' : 'Extraindo áudio', ratio })
+      })
+      // Transcrição parcial substitui só o trecho transcrito
+      const merged =
+        opts.range && p.transcript
+          ? { ...t, cues: [...p.transcript.cues.filter((c) => c.endSec <= opts.range!.startSec || c.startSec >= opts.range!.endSec), ...t.cues].sort((a, b) => a.startSec - b.startSec) }
+          : t
+      projects.update(projectId, { transcript: merged })
+      log('info', 'Transcrição concluída', { cues: merged.cues.length, language: merged.language })
+      return ok(merged)
+    } catch (err) {
+      return fail(err)
+    } finally {
+      tasks.delete(taskId)
+    }
+  })
+  handle(IPC.importSubtitles, async (_e, projectId: string) => {
+    try {
+      const res = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], filters: FILE_FILTERS.subtitle })
+      if (res.canceled) return ok(null)
+      const cues = parseSubtitles(await readFile(res.filePaths[0], 'utf8'))
+      if (cues.length === 0) throw new Error('Nenhuma legenda válida encontrada no arquivo.')
+      const transcript = { language: null, engine: `importado (${extname(res.filePaths[0]).slice(1)})`, createdAt: Date.now(), cues }
+      projects.update(projectId, { transcript })
+      return ok(transcript)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.exportSubtitles, async (_e, projectId: string, format: 'srt' | 'vtt') => {
+    try {
+      const p = requireProject(projectId)
+      if (!p.transcript?.cues.length) throw new Error('Não há transcrição para exportar.')
+      const res = await dialog.showSaveDialog(mainWindow!, {
+        defaultPath: join(dirname(p.path), `${basename(p.path, extname(p.path))}.${format}`),
+        filters: [{ name: format.toUpperCase(), extensions: [format] }]
+      })
+      if (res.canceled || !res.filePath) return ok(null)
+      await writeFile(res.filePath, format === 'srt' ? formatSrt(p.transcript.cues) : formatVtt(p.transcript.cues), 'utf8')
+      return ok(res.filePath)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.removeFillers, (_e, projectId: string, segmentId: string) => {
+    try {
+      const p = requireProject(projectId)
+      const seg = p.segments.find((s) => s.id === segmentId)
+      if (!seg) throw new Error('Trecho não encontrado.')
+      const words = (p.transcript?.cues ?? []).flatMap((c) => c.words ?? [])
+      if (words.length === 0) throw new Error('É preciso uma transcrição com tempo por palavra (whisper.cpp).')
+      let removedSec = 0
+      let removedWords = 0
+      const ranges = seg.ranges.flatMap((r) => {
+        const res = removeFillers(r, words)
+        removedSec += res.removedSec
+        removedWords += res.removedWords
+        return res.ranges
+      })
+      if (ranges.length === 0) throw new Error('Nada sobraria do trecho.')
+      const segment = { ...seg, ranges }
+      projects.update(projectId, { segments: p.segments.map((s) => (s.id === segmentId ? segment : s)) })
+      return ok({ segment, removedSec: Math.round(removedSec * 10) / 10, removedWords })
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  handle(IPC.enqueue, (_e, requests: CutRequest[], priority: Job['priority'] = 'normal') => {
+    try {
+      if (!Array.isArray(requests) || requests.length === 0) throw new Error('Nada para exportar.')
+      return ok(requests.map((r) => queue.add(r, priority).id))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.queueState, () => queue.state())
+  handle(IPC.queueAction, (_e, action: string, id: string) => {
+    if (action === 'cancel') queue.cancel(id)
+    else if (action === 'retry') queue.retry(id)
+    else if (action === 'remove') queue.remove(id)
+    else if (action === 'up' || action === 'down') queue.move(id, action === 'up' ? -1 : 1)
+    else if (action === 'alta' || action === 'normal' || action === 'baixa') queue.setPriority(id, action)
+  })
+  handle(IPC.queueControl, (_e, action: string) => {
+    if (action === 'pause') queue.pause()
+    else if (action === 'resume') queue.resume()
+    else if (action === 'clearFinished') queue.clearFinished()
+    else if (action === 'cancelAll') queue.cancelAll()
+  })
+  ipcMain.on(IPC.startDrag, (e, path: string) => {
+    if (typeof path !== 'string' || !existsSync(path)) return
+    e.sender.startDrag({ file: path, icon: nativeImage.createFromBuffer(Buffer.from(TRAY_ICON, 'base64')) })
+  })
+  handle(IPC.exportInterchange, async (_e, projectId: string, kind: 'fcpxml' | 'edl', segmentIds?: string[]) => {
+    try {
+      const p = requireProject(projectId)
+      const segs = p.segments.filter((s) => !segmentIds || segmentIds.includes(s.id))
+      if (segs.length === 0) throw new Error('Crie pelo menos um trecho antes de exportar.')
+      const meta = await probeMedia(ffprobePath()!, p.path)
+      const src = {
+        path: p.path,
+        fileName: p.fileName,
+        durationSec: meta.durationSec,
+        width: meta.video?.width ?? 1920,
+        height: meta.video?.height ?? 1080,
+        fps: meta.video?.fps ?? 30,
+        audioChannels: meta.audio?.channels ?? null,
+        sampleRate: meta.audio?.sampleRate ?? null
+      }
+      const name = `${basename(p.path, extname(p.path))} — BigLoop`
+      const dir = join(settings.get().outputDir, 'Premiere e DaVinci')
+      const base = join(dir, `${basename(p.path, extname(p.path))}_cortes`)
+      let out = `${base}.${kind === 'fcpxml' ? 'xml' : 'edl'}`
+      for (let i = 2; existsSync(out); i++) out = `${base} (${i}).${kind === 'fcpxml' ? 'xml' : 'edl'}`
+      await mkdir(dir, { recursive: true })
+      await writeFile(out, kind === 'fcpxml' ? buildFcpXml(name, src, segs) : buildEdl(name, src, segs), 'utf8')
+      log('info', 'Exportado para edição', { kind, out })
+      return ok(out)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  handle(IPC.aiSocial, async (_e, projectId: string, segmentId: string, platform: string) => {
+    try {
+      const s = settings.get()
+      if (!s.aiEnabled) throw new AiError('A IA está desligada. Ative em Configurações → IA.')
+      const p = requireProject(projectId)
+      const seg = p.segments.find((x) => x.id === segmentId)
+      if (!seg) throw new Error('Trecho não encontrado.')
+      const text = (p.transcript?.cues ?? [])
+        .filter((c) => seg.ranges.some((r) => c.endSec > r.startSec && c.startSec < r.endSec))
+        .map((c) => c.text)
+        .join(' ')
+      if (!text.trim()) throw new Error('O trecho não tem transcrição. Transcreva antes.')
+      log('info', 'IA: gerando texto para redes', { chars: text.length })
+      return ok(await generateSocialCopy(decryptSecret(s.aiKeyEnc), s.aiModel, text, platform))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.aiTranslate, async (_e, projectId: string, language: string) => {
+    try {
+      const s = settings.get()
+      if (!s.aiEnabled) throw new AiError('A IA está desligada. Ative em Configurações → IA.')
+      const p = requireProject(projectId)
+      if (!p.transcript?.cues.length) throw new Error('Não há transcrição para traduzir.')
+      const cues = await translateCues(decryptSecret(s.aiKeyEnc), s.aiModel, p.transcript.cues, language)
+      const transcript = { language, engine: `${p.transcript.engine} + tradução`, createdAt: Date.now(), cues }
+      projects.update(projectId, { transcript })
+      return ok(transcript)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  handle(IPC.getSettings, () => settings.get())
+  handle(IPC.saveSettings, async (_e, patch: Partial<AppSettings>) => {
+    const before = settings.get()
+    // Segredos só pelo canal próprio
+    const { obsPasswordEnc: _a, aiKeyEnc: _b, ...safe } = patch
+    const after = settings.update(safe)
+    if (after.concurrency !== before.concurrency) queue.setConcurrency(after.concurrency)
+    if (after.obsEnabled !== before.obsEnabled || after.obsHost !== before.obsHost || after.obsPort !== before.obsPort) {
+      obs.stop()
+      if (after.obsEnabled) obs.start()
+    }
+    if (after.obsEnabled !== before.obsEnabled || after.markerShortcut !== before.markerShortcut) registerShortcut()
+    if (after.watchEnabled !== before.watchEnabled || after.watchDir !== before.watchDir) await restartWatcher()
+    if (after.ffmpegPath !== before.ffmpegPath) hwEncoders = null
+    if (after.minimizeToTray && !tray) createTray()
+    return after
+  })
+  handle(IPC.setSecret, (_e, kind: 'obs' | 'ai', value: string) => {
+    try {
+      if (value && !safeStorage.isEncryptionAvailable()) throw new Error('O sistema não oferece armazenamento seguro; o segredo não foi salvo.')
+      const enc = value ? safeStorage.encryptString(value).toString('base64') : ''
+      settings.update(kind === 'obs' ? { obsPasswordEnc: enc } : { aiKeyEnc: enc })
+      if (kind === 'obs' && settings.get().obsEnabled) {
+        obs.stop()
+        obs.start()
+      }
+      return ok(!!value)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.toolStatus, async (_e, refresh?: boolean): Promise<ToolStatus> => {
     const check = async (path: string | null) => {
       if (!path) return { path: null, version: null, error: 'Não encontrado' }
       try {
@@ -148,28 +688,99 @@ function registerIpc(): void {
         return { path, version: null, error: errorMessage(err) }
       }
     }
-    return { ffmpeg: await check(ffmpegPath()), ffprobe: await check(ffprobePath()) }
+    const s = settings.get()
+    const ff = ffmpegPath()
+    if (ff && (refresh || hwEncoders === null)) hwEncoders = (await detectHardwareEncoders(ff)) as VideoEncoder[]
+    const whisper = s.whisperPath
+      ? existsSync(s.whisperPath)
+        ? { path: s.whisperPath, version: existsSync(s.whisperModelPath) ? `modelo: ${basename(s.whisperModelPath)}` : null, error: existsSync(s.whisperModelPath) ? null : 'Modelo não configurado' }
+        : { path: s.whisperPath, version: null, error: 'Arquivo não encontrado' }
+      : { path: null, version: null, error: 'Não configurado' }
+    return { ffmpeg: await check(ff), ffprobe: await check(ffprobePath()), whisper, hardwareEncoders: hwEncoders ?? [] }
+  })
+
+  handle(IPC.obsStatus, () => obs.status)
+  handle(IPC.obsTest, async (_e, host: string, port: number, password?: string) => {
+    try {
+      return ok(await ObsManager.test(host, port, password ?? decryptSecret(settings.get().obsPasswordEnc)))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.obsMarker, () => addObsMarker())
+  handle(IPC.watchStatus, () => ({ ...watchState, pending: watcher?.pending ?? [], error: watchState.error ?? watcher?.lastError ?? null }))
+
+  handle(IPC.appInfo, () => ({
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    platform: `${process.platform} ${os.release()} ${process.arch}`,
+    userData: app.getPath('userData'),
+    logPath: logPath() ?? ''
+  }))
+  handle(IPC.openFolder, async (_e, dir: string) => {
+    const err = await shell.openPath(dir)
+    if (err) log('warn', 'Não foi possível abrir a pasta', { dir, err })
+  })
+  handle(IPC.showInFolder, (_e, file: string) => shell.showItemInFolder(file))
+  handle(IPC.openExternal, (_e, url: string) => {
+    if (/^https:\/\//.test(url)) return shell.openExternal(url)
+  })
+  handle(IPC.diagnostics, async () => {
+    const s = settings.get()
+    const logText = logPath() ? await readFile(logPath()!, 'utf8').catch(() => '') : ''
+    const text = [
+      `BigLoop AutoClips ${app.getVersion()} · Electron ${process.versions.electron} · ${process.platform} ${os.release()} ${process.arch}`,
+      `FFmpeg: ${ffmpegPath() ?? 'não encontrado'} · ffprobe: ${ffprobePath() ?? 'não encontrado'}`,
+      `Encoders de vídeo: ${(hwEncoders ?? []).join(', ') || 'nenhum de placa de vídeo'}`,
+      `OBS: ${obs.status.state} ${obs.status.version ?? ''} · Monitoramento: ${watchState.enabled ? watchState.dir : 'desligado'}`,
+      `Fila: ${queue.state().jobs.length} itens, ${queue.activeCount} processando`,
+      `Configurações: ${JSON.stringify({ ...s, learnedWeights: undefined })}`,
+      '',
+      '— Últimas linhas do log —',
+      logText.split('\n').slice(-200).join('\n')
+    ].join('\n')
+    const clean = redact(text, os.homedir(), os.userInfo().username)
+    clipboard.writeText(clean)
+    return clean
   })
 }
 
-app.whenReady().then(() => {
-  const logPath = initLogger(join(app.getPath('userData'), 'logs'))
-  settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), {
-    outputDir: join(app.getPath('videos'), 'BigLoop AutoClips'),
-    ffmpegPath: '',
-    ffprobePath: '',
-    defaultMode: 'precise'
-  })
-  log('info', `BigLoop AutoClips ${app.getVersion()} iniciado`, { logPath })
+// ───────────── Ciclo de vida ─────────────
+
+app.on('second-instance', showWindow)
+
+app.whenReady().then(async () => {
+  const lp = initLogger(join(app.getPath('userData'), 'logs'))
+  settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), defaultSettings({ outputDir: join(app.getPath('videos'), 'BigLoop AutoClips') }))
+  projects = new ProjectStore(join(app.getPath('userData'), 'projetos'))
+  log('info', `BigLoop AutoClips ${app.getVersion()} iniciado`, { log: lp })
   handleMediaProtocol()
+  setupQueue()
+  setupObs()
   registerIpc()
   createWindow()
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  if (settings.get().minimizeToTray) createTray()
+  registerShortcut()
+  await restartWatcher()
+  app.on('activate', showWindow)
+})
+
+app.on('before-quit', () => {
+  quitting = true
+  queue?.flush()
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  watcher?.stop()
+  obs?.stop()
+  for (const t of tasks.values()) t.abort()
+  queue?.cancelAll()
+  queue?.flush()
 })
 
 app.on('window-all-closed', () => {
-  for (const job of jobs.values()) job.cancel()
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin' && !(settings?.get().minimizeToTray && tray)) app.quit()
 })

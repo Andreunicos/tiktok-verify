@@ -1,4 +1,4 @@
-import type { BigLoopApi } from '@shared/types'
+import type { BigLoopApi } from '@shared/api'
 
 declare global {
   interface Window {

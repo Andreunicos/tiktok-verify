@@ -1,239 +1,219 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppSettings, CutMode, MediaMetadata } from '@shared/types'
-import { formatTimecode, parseTimecode } from '@shared/time'
-import { validateCutRange } from '@shared/validation'
-import { JobList } from './components/JobList'
-import { MetadataCard } from './components/MetadataCard'
-import { ModeSelector, SettingsPanel } from './components/SettingsPanel'
-import { Timeline } from './components/Timeline'
-import { useJobs } from './useJobs'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import type { AppSettings, ObsStatus, QueueState, ToolStatus, WatchStatus } from '@shared/types'
+import { SHORTCUTS, typingTarget } from './lib/keys'
+import { Modal, ToastProvider, useToast } from './lib/ui'
+import { Editor } from './views/Editor'
+import { Home } from './views/Home'
 
-type Tab = 'cortar' | 'config'
+const QueueView = lazy(() => import('./views/QueueView'))
+const SettingsView = lazy(() => import('./views/SettingsView'))
+const About = lazy(() => import('./views/About'))
+
+type View = 'inicio' | 'editor' | 'fila' | 'config' | 'sobre'
 
 export function App() {
-  const [tab, setTab] = useState<Tab>('cortar')
-  const [settings, setSettings] = useState<AppSettings | null>(null)
-  const [meta, setMeta] = useState<MediaMetadata | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [dragging, setDragging] = useState(false)
+  return (
+    <ToastProvider>
+      <Shell />
+    </ToastProvider>
+  )
+}
 
-  const [startText, setStartText] = useState('')
-  const [endText, setEndText] = useState('')
-  const [mode, setMode] = useState<CutMode>('precise')
-  const [includeAudio, setIncludeAudio] = useState(true)
-  const [baseName, setBaseName] = useState('')
-  const [current, setCurrent] = useState(0)
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const previewEnd = useRef<number | null>(null)
-  const { jobs, add, clearFinished } = useJobs()
+function Shell() {
+  const api = window.bigloop
+  const toast = useToast()
+  const [view, setView] = useState<View>('inicio')
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [tools, setTools] = useState<ToolStatus | null>(null)
+  const [queue, setQueue] = useState<QueueState>({ jobs: [], paused: false, concurrency: 1 })
+  const [obs, setObs] = useState<ObsStatus | null>(null)
+  const [watch, setWatch] = useState<WatchStatus | null>(null)
+  const [projectId, setProjectId] = useState<string | null>(null)
+  const [section, setSection] = useState<string | undefined>()
+  const [dragging, setDragging] = useState(false)
+  const [help, setHelp] = useState(false)
+  const [libraryKey, setLibraryKey] = useState(0)
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    void window.bigloop.getSettings().then((s) => {
-      setSettings(s)
-      setMode(s.defaultMode)
-    })
+    void api.getSettings().then(setSettings)
+    void api.toolStatus().then(setTools)
+    void api.queueState().then(setQueue)
+    void api.obsStatus().then(setObs)
+    void api.watchStatus().then(setWatch)
+    const offs = [
+      api.onQueue(setQueue),
+      api.onJobProgress((j) => setQueue((q) => ({ ...q, jobs: q.jobs.map((x) => (x.id === j.id ? j : x)) }))),
+      api.onObsStatus(setObs),
+      api.onWatchStatus(setWatch),
+      api.onLibraryChanged((info) => {
+        setLibraryKey((k) => k + 1)
+        if (info.reason !== 'marcador') toast(info.reason === 'obs' ? 'Nova gravação do OBS importada.' : 'Nova gravação importada da pasta.', 'ok', { label: 'Abrir', run: () => openProject(info.projectId) })
+      }),
+      api.onShortcut(() => toast('Marcador criado no OBS.', 'ok'))
+    ]
+    return () => offs.forEach((off) => off())
   }, [])
 
-  const updateSettings = async (patch: Partial<AppSettings>) => {
-    setSettings(await window.bigloop.saveSettings(patch))
-    if (patch.defaultMode) setMode(patch.defaultMode)
-  }
-
-  const importPath = useCallback(async (path: string | null) => {
-    if (!path) return
-    setLoading(true)
-    setError(null)
-    const res = await window.bigloop.probe(path)
-    setLoading(false)
-    if (!res.ok) {
-      setError(res.error)
-      return
+  // Tema
+  useEffect(() => {
+    if (!settings) return
+    const apply = () => {
+      const dark = settings.theme === 'dark' || (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light'
     }
-    setMeta(res.value)
-    setStartText(formatTimecode(0))
-    setEndText(formatTimecode(Math.min(res.value.durationSec, 30)))
-    setBaseName('')
-    setCurrent(0)
-    setTab('cortar')
+    apply()
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [settings?.theme])
+
+  const updateSettings = useCallback(async (patch: Partial<AppSettings>) => {
+    setSettings(await api.saveSettings(patch))
+    // Caminhos de ferramentas mudaram: reconsulta FFmpeg/whisper
+    if (['ffmpegPath', 'ffprobePath', 'whisperPath', 'whisperModelPath'].some((k) => k in patch)) setTools(await api.toolStatus(true))
   }, [])
+  const refreshTools = useCallback(async () => setTools(await api.toolStatus(true)), [])
 
-  const start = parseTimecode(startText)
-  const end = parseTimecode(endText)
-  const rangeError =
-    meta && (start === null || end === null)
-      ? 'Use o formato hh:mm:ss.mmm, mm:ss ou segundos.'
-      : meta && start !== null && end !== null
-        ? validateCutRange(start, end, meta.durationSec)
-        : null
-
-  const seek = (sec: number) => {
-    if (videoRef.current) videoRef.current.currentTime = Math.max(0, Math.min(sec, meta?.durationSec ?? sec))
+  const openProject = (id: string) => {
+    setProjectId(id)
+    setView('editor')
+  }
+  const importPath = async (path: string | null) => {
+    if (!path) return
+    setBusy(true)
+    const res = await api.openMedia(path)
+    setBusy(false)
+    if (!res.ok) return toast(res.error, 'erro')
+    setLibraryKey((k) => k + 1)
+    openProject(res.value.project.id)
+  }
+  const pickAndImport = async () => importPath(await api.pickFile('video'))
+  const openSettings = (s?: string) => {
+    setSection(s)
+    setView('config')
   }
 
-  const markStart = () => setStartText(formatTimecode(videoRef.current?.currentTime ?? 0))
-  const markEnd = () => setEndText(formatTimecode(videoRef.current?.currentTime ?? 0))
-  const previewCut = () => {
-    if (start === null || end === null || !videoRef.current) return
-    previewEnd.current = end
-    seek(start)
-    void videoRef.current.play()
-  }
-
-  const submit = async () => {
-    if (!meta || !settings || start === null || end === null || rangeError) return
-    const request = { inputPath: meta.path, outputDir: settings.outputDir, startSec: start, endSec: end, mode, includeAudio, baseName }
-    const res = await window.bigloop.startCut(request)
-    if (res.ok) add(res.value.jobId, request)
-    else setError(res.error)
-  }
-
-  // Atalhos: I = marcar início, O = marcar fim, espaço = play/pause.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (tab !== 'cortar' || !meta || (e.target as HTMLElement).closest('input, textarea')) return
-      if (e.key === 'i' || e.key === 'I') markStart()
-      else if (e.key === 'o' || e.key === 'O') markEnd()
-      else if (e.key === ' ' && videoRef.current) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault()
-        if (videoRef.current.paused) void videoRef.current.play()
-        else videoRef.current.pause()
-      }
+        void pickAndImport()
+      } else if (e.key === '?' && !typingTarget(e)) setHelp((h) => !h)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
 
+  if (!settings) return <div className="center-msg muted">Carregando…</div>
+  const running = queue.jobs.filter((j) => j.status === 'processando').length
+  const waiting = queue.jobs.filter((j) => j.status === 'aguardando').length
+
   return (
     <div
       className={`app ${dragging ? 'dragging' : ''}`}
       onDragOver={(e) => {
-        e.preventDefault()
-        setDragging(true)
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault()
+          setDragging(true)
+        }
       }}
-      onDragLeave={() => setDragging(false)}
+      onDragLeave={(e) => e.currentTarget === e.target && setDragging(false)}
       onDrop={(e) => {
         e.preventDefault()
         setDragging(false)
         const file = e.dataTransfer.files[0]
-        if (file) void importPath(window.bigloop.pathForFile(file))
+        if (file) void importPath(api.pathForFile(file))
       }}
     >
       <header className="topbar">
-        <div className="brand">
+        <button className="brand ghost" onClick={() => setView('inicio')}>
           <span className="logo">◎</span> BigLoop <strong>AutoClips</strong>
-        </div>
-        <nav>
-          <button className={tab === 'cortar' ? 'active' : ''} onClick={() => setTab('cortar')}>
-            Cortar
+        </button>
+        <nav aria-label="Principal">
+          <button className={view === 'inicio' ? 'active' : ''} onClick={() => setView('inicio')}>
+            Início
           </button>
-          <button className={tab === 'config' ? 'active' : ''} onClick={() => setTab('config')}>
+          <button className={view === 'editor' ? 'active' : ''} onClick={() => projectId && setView('editor')} disabled={!projectId}>
+            Editor
+          </button>
+          <button className={view === 'fila' ? 'active' : ''} onClick={() => setView('fila')}>
+            Fila{running + waiting > 0 ? <span className="pill">{running + waiting}</span> : null}
+          </button>
+          <button className={view === 'config' ? 'active' : ''} onClick={() => openSettings()}>
             Configurações
           </button>
+          <button className={view === 'sobre' ? 'active' : ''} onClick={() => setView('sobre')}>
+            Sobre
+          </button>
         </nav>
-        <button className="primary" onClick={async () => importPath(await window.bigloop.pickVideo())} disabled={loading}>
-          {loading ? 'Lendo…' : 'Importar vídeo'}
+        <span className="chips">
+          {settings.obsEnabled && (
+            <span className={`chip ${obs?.state === 'conectado' ? 'ok' : obs?.state === 'erro' ? 'err' : ''}`} title={obs?.error ?? ''}>
+              OBS {obs?.recording ? '● gravando' : obs?.state ?? ''}
+            </span>
+          )}
+          {watch?.enabled && <span className={`chip ${watch.error ? 'err' : 'ok'}`}>pasta</span>}
+          <button className="ghost icon" onClick={() => setHelp(true)} title="Atalhos (?)" aria-label="Atalhos de teclado">
+            ⌨
+          </button>
+        </span>
+        <button className="primary" onClick={pickAndImport} disabled={busy}>
+          {busy ? 'Lendo…' : 'Importar vídeo'}
         </button>
       </header>
 
-      {error && (
-        <div className="banner error" role="alert">
-          {error}
-          <button className="ghost" onClick={() => setError(null)} aria-label="Fechar">
-            ✕
-          </button>
-        </div>
-      )}
+      <Suspense fallback={<div className="center-msg muted">Carregando…</div>}>
+        {view === 'inicio' && (
+          <Home
+            settings={settings}
+            tools={tools}
+            obs={obs}
+            watch={watch}
+            libraryKey={libraryKey}
+            onOpen={openProject}
+            onImport={pickAndImport}
+            onOpenSettings={openSettings}
+            onDismissOnboarding={() => updateSettings({ onboardingDone: true })}
+          />
+        )}
+        {view === 'editor' && projectId && (
+          <Editor
+            projectId={projectId}
+            settings={settings}
+            tools={tools}
+            onSettings={updateSettings}
+            onOpenSettings={openSettings}
+            onGoQueue={() => setView('fila')}
+            onClose={() => setView('inicio')}
+            reloadKey={0}
+          />
+        )}
+        {view === 'fila' && <QueueView queue={queue} settings={settings} onSettings={updateSettings} />}
+        {view === 'config' && <SettingsView settings={settings} tools={tools} obs={obs} watch={watch} section={section} onSettings={updateSettings} onRefreshTools={refreshTools} />}
+        {view === 'sobre' && <About tools={tools} />}
+      </Suspense>
 
-      {tab === 'config' && settings && <SettingsPanel settings={settings} onChange={updateSettings} />}
-
-      {tab === 'cortar' && !meta && (
-        <div className="empty">
-          <div className="dropzone">
-            <p className="big">Arraste um vídeo aqui</p>
-            <p className="muted">ou use “Importar vídeo”. MP4, MKV, MOV, FLV e outros formatos lidos pelo FFmpeg.</p>
-          </div>
-        </div>
-      )}
-
-      {tab === 'cortar' && meta && settings && (
-        <main className="workspace">
-          <div className="player-col">
-            <div className="player">
-              {meta.video ? (
-                <video
-                  ref={videoRef}
-                  src={window.bigloop.mediaUrl(meta.path)}
-                  controls
-                  onTimeUpdate={(e) => {
-                    const t = e.currentTarget.currentTime
-                    setCurrent(t)
-                    if (previewEnd.current !== null && t >= previewEnd.current) {
-                      e.currentTarget.pause()
-                      previewEnd.current = null
-                    }
-                  }}
-                  onPause={() => (previewEnd.current = null)}
-                />
-              ) : (
-                <div className="no-video muted">Arquivo sem faixa de vídeo.</div>
-              )}
-            </div>
-            <Timeline duration={meta.durationSec} current={current} start={start} end={end} onSeek={seek} />
-            <div className="row controls">
-              <span className="mono">
-                {formatTimecode(current)} / {formatTimecode(meta.durationSec)}
-              </span>
-              <button onClick={markStart} title="Atalho: I">
-                Marcar início [I]
-              </button>
-              <button onClick={markEnd} title="Atalho: O">
-                Marcar fim [O]
-              </button>
-              <button onClick={previewCut} disabled={!!rangeError}>
-                ▶ Prévia do trecho
-              </button>
-            </div>
-            <JobList jobs={jobs} outputDir={settings.outputDir} onClear={clearFinished} />
-          </div>
-
-          <aside className="side-col">
-            <MetadataCard meta={meta} />
-            <section className="card">
-              <h2>Corte manual</h2>
-              <div className="two">
-                <label className="field">
-                  <span>Início</span>
-                  <input className="mono" value={startText} onChange={(e) => setStartText(e.target.value)} />
-                </label>
-                <label className="field">
-                  <span>Fim</span>
-                  <input className="mono" value={endText} onChange={(e) => setEndText(e.target.value)} />
-                </label>
+      {help && (
+        <Modal title="Atalhos de teclado" onClose={() => setHelp(false)}>
+          <div className="shortcuts">
+            {SHORTCUTS.map((g) => (
+              <div key={g.group}>
+                <h3>{g.group}</h3>
+                <dl>
+                  {g.items.map((s) => (
+                    <div key={s.keys}>
+                      <dt>
+                        <kbd>{s.keys}</kbd>
+                      </dt>
+                      <dd>{s.action}</dd>
+                    </div>
+                  ))}
+                </dl>
               </div>
-              <p className="muted small">
-                Duração do corte:{' '}
-                <span className="mono">{start !== null && end !== null && end > start ? formatTimecode(end - start) : '—'}</span>
-              </p>
-              {rangeError && <p className="error small">{rangeError}</p>}
-              <ModeSelector value={mode} onChange={setMode} />
-              <label className="check">
-                <input type="checkbox" checked={includeAudio} onChange={(e) => setIncludeAudio(e.target.checked)} />
-                Incluir áudio
-              </label>
-              <label className="field">
-                <span>Nome do arquivo (opcional)</span>
-                <input value={baseName} onChange={(e) => setBaseName(e.target.value)} placeholder="gerado automaticamente" />
-              </label>
-              <p className="muted small" title={settings.outputDir}>
-                Saída: <code>{settings.outputDir}</code>
-              </p>
-              <button className="primary wide" onClick={submit} disabled={!!rangeError}>
-                Gerar corte MP4
-              </button>
-            </section>
-          </aside>
-        </main>
+            ))}
+          </div>
+        </Modal>
       )}
     </div>
   )

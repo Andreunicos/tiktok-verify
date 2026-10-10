@@ -1,11 +1,21 @@
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 let logFile: string | null = null
 
+export const logPath = () => logFile
+
+const MAX_LOG_BYTES = 5 * 1024 * 1024
+
 export function initLogger(dir: string): string {
   mkdirSync(dir, { recursive: true })
   logFile = join(dir, 'bigloop-autoclips.log')
+  // Rotação simples: guarda um arquivo anterior.
+  try {
+    if (statSync(logFile).size > MAX_LOG_BYTES) renameSync(logFile, `${logFile}.1`)
+  } catch {
+    // ainda não existe
+  }
   return logFile
 }
 

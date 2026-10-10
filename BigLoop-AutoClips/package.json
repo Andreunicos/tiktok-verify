@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dist:win": "electron-vite build && electron-builder --win"
+    "dist:win": "electron-vite build && electron-builder --win",
+    "test:e2e": "electron-vite build && node tests/e2e/app.e2e.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
@@ -24,14 +25,17 @@
     "electron": "^44.7.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "playwright-core": "1.56",
     "typescript": "^5.9.3",
     "vite": "^7.3.7",
     "vitest": "^3.2.7"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
   },
   "build": {
     "appId": "com.bigloop.autoclips",
