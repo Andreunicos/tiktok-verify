@@ -172,7 +172,7 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
         expect(count).toBe(2)
         return {
           via: 'IA de teste',
-          clips: candidates.map((c, i) => ({ id: c.id, aiScore: 100 - i * 10, title: `Título da IA ${i + 1}`, description: 'Descrição da IA', hashtags: ['#ia', '#teste'], hook: '', keywords: ['jogar'] }))
+          clips: candidates.map((c, i) => ({ id: c.id, aiScore: 100 - i * 10, title: `Título da IA ${i + 1}`, description: 'Descrição da IA', hashtags: ['#ia', '#teste'], hook: '', overlay: 'OLHA ISSO', keywords: ['jogar'] }))
         }
       }
     })
@@ -187,6 +187,26 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     expect(done.steps.find((s) => s.key === 'editar')!.detail).toMatch(/título e barra/)
     expect(readFileSync(done.textsFile!, 'utf8')).toMatch(/Descrição da IA/)
     for (const c of done.clips) expect(probeJson(c.outputPath!).streams.find((s: { codec_type: string }) => s.codec_type === 'video').height).toBe(1920)
+  })
+
+  it('IA lê a transcrição inteira, o momento dela entra no corte, com texto de gancho; 👍 fica guardado', async () => {
+    const { pilot } = setup(true, undefined, {
+      aiDiscover: async () => [{ startSec: 61, endSec: 79, reason: 'piada completa' }],
+      aiPlan: async (_p, _count, candidates) => ({
+        via: 'IA de teste',
+        clips: candidates.map((c) => ({ id: c.id, aiScore: c.id.startsWith('ia') ? 99 : 10, title: 'Título', description: 'd', hashtags: ['#a'], hook: '', overlay: 'ELE NÃO ESPERAVA', keywords: [] }))
+      })
+    })
+    const done = await waitDone(pilot, pilot.start(live, opts({ count: 1 })).id)
+    expect(done.state).toBe('concluído')
+    const c = done.clips[0]
+    expect(c.startSec).toBeLessThanOrEqual(61.2)
+    expect(c.endSec).toBeGreaterThanOrEqual(78.5)
+    expect(c.reasons.join(' ')).toMatch(/IA: piada completa/)
+    expect(c.features).toBeTruthy()
+    const back = pilot.setFeedback(done.id, c.segmentId, 'up')
+    expect(back?.feedback).toBe('up')
+    expect(pilot.get(done.id)!.clips[0].feedback).toBe('up')
   })
 
   it('IA fora do ar: avisa e escolhe pelas regras locais', async () => {
@@ -241,7 +261,7 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
       },
       aiPlan: async (_p, count, candidates, req) => {
         request = req
-        return { via: 'IA de teste', clips: candidates.slice(0, count).map((c) => ({ id: c.id, aiScore: 90, title: 'Um título bem chamativo', description: 'd', hashtags: ['#a'], hook: '', keywords: [] })) }
+        return { via: 'IA de teste', clips: candidates.slice(0, count).map((c) => ({ id: c.id, aiScore: 90, title: 'Um título bem chamativo', description: 'd', hashtags: ['#a'], hook: '', overlay: '', keywords: [] })) }
       }
     })
     const live2 = join(dir, 'outra live.mp4')

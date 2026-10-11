@@ -38,52 +38,19 @@ export interface SuggestInput {
   weights?: Record<keyof SuggestionFeatures, number> | null
 }
 
-/**
- * Sugere trechos com pontuação explicável. Não promete viralização: apenas combina sinais
- * (energia do áudio, picos, fala contínua, cortes de cena, gancho no início e limites limpos).
- */
-export function suggestClips({ analysis, cues, options, weights }: SuggestInput): Suggestion[] {
+/** Prepara o cálculo da nota de qualquer trecho (usado pelas sugestões e pelos trechos que a IA propõe). */
+function makeScorer(analysis: AnalysisResult, cues: Cue[] | null | undefined, weights?: Record<keyof SuggestionFeatures, number> | null) {
   const w = { ...DEFAULT_WEIGHTS, ...(weights ?? {}) }
   const D = analysis.durationSec
-  if (D < options.minSec) return []
   const secDb = analysis.rmsDb
   const voiced = secDb.filter((d) => d > -80)
   const median = percentile(voiced, 50)
   const p95 = percentile(voiced, 95)
   const spread = Math.max(3, p95 - median)
   const sentenceCues = (cues ?? []).filter((c) => c.text.trim())
-
-  // Fronteiras candidatas
-  const starts = new Set<number>([0])
-  const ends = new Set<number>([D])
-  for (const s of analysis.silences) {
-    starts.add(s.endSec)
-    ends.add(s.startSec)
-  }
-  for (const c of sentenceCues) {
-    starts.add(c.startSec)
-    if (/[.!?…]$/.test(c.text.trim()) || !c.text.trim()) ends.add(c.endSec)
-  }
-  for (const t of analysis.scenes) starts.add(t)
-  // Sem pausas suficientes: grade de 2 em 2 segundos
-  if (starts.size < 8) for (let t = 0; t < D; t += 2) starts.add(t)
-  if (ends.size < 8) for (let t = options.minSec; t <= D; t += 2) ends.add(t)
-  // Começos logo antes dos momentos mais fortes (som alto + muita ação), para o corte já abrir na ação
   const motion = analysis.motion ?? []
   const motionMed = percentile(motion.filter((m) => m > 0), 50)
   const motionHi = Math.max(motionMed + 0.5, percentile(motion.filter((m) => m > 0), 90))
-  const intensity = secDb.map((db, i) => (db - median) / spread + (motion.length ? ((motion[i] ?? 0) - motionMed) / (motionHi - motionMed) : 0))
-  const hot = intensity
-    .map((v, i) => ({ v, i }))
-    .sort((a, b) => b.v - a.v)
-    .filter((h) => h.v > 0.5)
-    .slice(0, 12)
-  for (const h of hot) {
-    for (const back of [2, 5]) if (h.i - back >= 0) starts.add(h.i - back)
-  }
-
-  const startList = [...starts].filter((t) => t >= 0 && t < D - options.minSec).sort((a, b) => a - b)
-  const endList = [...ends].filter((t) => t > 0 && t <= D).sort((a, b) => a - b)
   const silenceEnds = new Set(analysis.silences.map((s) => s.endSec))
   const silenceStarts = new Set(analysis.silences.map((s) => s.startSec))
   const cueStarts = new Set(sentenceCues.map((c) => c.startSec))
@@ -105,59 +72,108 @@ export function suggestClips({ analysis, cues, options, weights }: SuggestInput)
       .map((c) => c.text.trim())
       .join(' ')
 
+  const score = (s: number, e: number): Suggestion | null => {
+    const a = Math.floor(s)
+    const b = Math.min(secDb.length, Math.ceil(e))
+    const slice = secDb.slice(a, b)
+    if (slice.length === 0) return null
+    const meanPow = slice.reduce((x, db) => x + 10 ** (db / 10), 0) / slice.length
+    const meanDb = 10 * Math.log10(Math.max(meanPow, 1e-9))
+    const maxDb = Math.max(...slice)
+    const maxAt = a + slice.indexOf(maxDb)
+    const len = e - s
+    const sceneN = sceneCount(s, e)
+    const text = textIn(s, e)
+    const firstText = sentenceCues.find((c) => c.startSec >= s - 0.05 && c.startSec < s + 5)?.text.trim() ?? ''
+    const openingDb = secDb.slice(a, Math.min(b, a + 3))
+    const openingLoud = openingDb.length ? Math.max(...openingDb) : -90
+    const hookText = firstText && (/[?!]/.test(firstText) || HOOK_WORDS.test(firstText))
+    const features: SuggestionFeatures = {
+      energy: analysis.hasAudio ? clamp01((meanDb - median) / spread + 0.5) : 0,
+      peak: analysis.hasAudio ? clamp01((maxDb - median) / spread) : 0,
+      speech: analysis.hasAudio ? clamp01(1 - silentSeconds(s, e) / len) : 0,
+      scenes: clamp01(((sceneN / len) * 60) / 10),
+      hook: hookText ? 1 : analysis.hasAudio ? clamp01((openingLoud - median) / spread) * 0.7 : 0,
+      cleanStart: s === 0 || silenceEnds.has(s) || cueStarts.has(s) ? 1 : 0.4,
+      cleanEnd: e === D || silenceStarts.has(e) || cueEndsSentence.has(e) ? 1 : 0.4,
+      reaction: clamp01(reactionSeconds(s, e) / 1.5),
+      action: motion.length ? clamp01((avgMotion(s, e) - motionMed) / (motionHi - motionMed) + 0.3) : 0
+    }
+    const totalW = Object.values(w).reduce((x, y) => x + y, 0)
+    const score = Math.round(((Object.keys(features) as (keyof SuggestionFeatures)[]).reduce((x, f) => x + w[f] * (features[f] ?? 0), 0) / totalW) * 100)
+
+    const reasons: string[] = []
+    if (features.energy >= 0.6) reasons.push(`Energia do áudio ${(meanDb - median).toFixed(1)} dB acima da mediana do vídeo`)
+    if (features.peak >= 0.75) reasons.push(`Pico de volume em ${formatTimecode(maxAt)} (grito, risada ou reação?)`)
+    if (features.speech >= 0.85) reasons.push(`Fala contínua em ${Math.round(features.speech * 100)}% do trecho`)
+    if ((features.action ?? 0) >= 0.7) reasons.push('Muita ação na tela')
+    const kinds = reactionKinds(s, e)
+    if (kinds.length) reasons.push(`Tem ${kinds.map((k) => (k === 'risada' ? 'risada' : 'grito/reação forte')).join(' e ')} no trecho`)
+    if (sceneN >= 2) reasons.push(`${sceneN} mudanças de cena — visual dinâmico`)
+    if (hookText) reasons.push(`Começa com gancho: “${firstText.slice(0, 60)}${firstText.length > 60 ? '…' : ''}”`)
+    else if (features.hook >= 0.6) reasons.push('Começo forte (volume alto nos 3 primeiros segundos)')
+    if (features.cleanStart === 1 && s !== 0) reasons.push('Começa logo após uma pausa ou início de frase')
+    if (features.cleanEnd === 1 && e !== D) reasons.push('Termina no fim de uma frase ou numa pausa')
+    if (features.cleanStart < 1) reasons.push('⚠ Pode começar no meio de uma fala')
+    if (features.cleanEnd < 1) reasons.push('⚠ Pode terminar no meio de uma fala')
+
+    const title = text ? (text.match(/[^.!?…]+[.!?…]?/)?.[0] ?? text).trim().slice(0, 70) : `Momento em ${formatTimecode(s)}`
+    return { id: `s${Math.round(s * 100)}-${Math.round(e * 100)}`, startSec: s, endSec: e, score, features, reasons, title }
+  }
+  return { score, D, secDb, median, spread, sentenceCues, motion, motionMed, motionHi }
+}
+
+/** Nota explicada de um trecho qualquer (ex.: um momento que a IA achou lendo a transcrição). */
+export function scoreRange(analysis: AnalysisResult, cues: Cue[] | null | undefined, range: Range, weights?: Record<keyof SuggestionFeatures, number> | null): Suggestion | null {
+  return makeScorer(analysis, cues, weights).score(range.startSec, range.endSec)
+}
+
+/**
+ * Sugere trechos com pontuação explicável. Não promete viralização: apenas combina sinais
+ * (energia do áudio, picos, fala contínua, cortes de cena, gancho no início e limites limpos).
+ */
+export function suggestClips({ analysis, cues, options, weights }: SuggestInput): Suggestion[] {
+  const sc = makeScorer(analysis, cues, weights)
+  const { D, secDb, median, spread, sentenceCues, motion, motionMed, motionHi } = sc
+  if (D < options.minSec) return []
+
+  // Fronteiras candidatas
+  const starts = new Set<number>([0])
+  const ends = new Set<number>([D])
+  for (const s of analysis.silences) {
+    starts.add(s.endSec)
+    ends.add(s.startSec)
+  }
+  for (const c of sentenceCues) {
+    starts.add(c.startSec)
+    if (/[.!?…]$/.test(c.text.trim()) || !c.text.trim()) ends.add(c.endSec)
+  }
+  for (const t of analysis.scenes) starts.add(t)
+  // Sem pausas suficientes: grade de 2 em 2 segundos
+  if (starts.size < 8) for (let t = 0; t < D; t += 2) starts.add(t)
+  if (ends.size < 8) for (let t = options.minSec; t <= D; t += 2) ends.add(t)
+  // Começos logo antes dos momentos mais fortes (som alto + muita ação), para o corte já abrir na ação
+  const intensity = secDb.map((db, i) => (db - median) / spread + (motion.length ? ((motion[i] ?? 0) - motionMed) / (motionHi - motionMed) : 0))
+  const hot = intensity
+    .map((v, i) => ({ v, i }))
+    .sort((a, b) => b.v - a.v)
+    .filter((h) => h.v > 0.5)
+    .slice(0, 12)
+  for (const h of hot) {
+    for (const back of [2, 5]) if (h.i - back >= 0) starts.add(h.i - back)
+  }
+
+  const startList = [...starts].filter((t) => t >= 0 && t < D - options.minSec).sort((a, b) => a - b)
+  const endList = [...ends].filter((t) => t > 0 && t <= D).sort((a, b) => a - b)
+
   const candidates: Suggestion[] = []
   for (const s of startList) {
     const valid = endList.filter((e) => e - s >= options.minSec && e - s <= options.maxSec)
     if (valid.length === 0) continue
     const step = Math.max(1, Math.floor(valid.length / 6))
     for (let k = 0; k < valid.length; k += step) {
-      const e = valid[k]
-      const a = Math.floor(s)
-      const b = Math.min(secDb.length, Math.ceil(e))
-      const slice = secDb.slice(a, b)
-      if (slice.length === 0) continue
-      const meanPow = slice.reduce((x, db) => x + 10 ** (db / 10), 0) / slice.length
-      const meanDb = 10 * Math.log10(Math.max(meanPow, 1e-9))
-      const maxDb = Math.max(...slice)
-      const maxAt = a + slice.indexOf(maxDb)
-      const len = e - s
-      const sceneN = sceneCount(s, e)
-      const text = textIn(s, e)
-      const firstText = sentenceCues.find((c) => c.startSec >= s - 0.05 && c.startSec < s + 5)?.text.trim() ?? ''
-      const openingDb = secDb.slice(a, Math.min(b, a + 3))
-      const openingLoud = openingDb.length ? Math.max(...openingDb) : -90
-      const hookText = firstText && (/[?!]/.test(firstText) || HOOK_WORDS.test(firstText))
-      const features: SuggestionFeatures = {
-        energy: analysis.hasAudio ? clamp01((meanDb - median) / spread + 0.5) : 0,
-        peak: analysis.hasAudio ? clamp01((maxDb - median) / spread) : 0,
-        speech: analysis.hasAudio ? clamp01(1 - silentSeconds(s, e) / len) : 0,
-        scenes: clamp01(((sceneN / len) * 60) / 10),
-        hook: hookText ? 1 : analysis.hasAudio ? clamp01((openingLoud - median) / spread) * 0.7 : 0,
-        cleanStart: s === 0 || silenceEnds.has(s) || cueStarts.has(s) ? 1 : 0.4,
-        cleanEnd: e === D || silenceStarts.has(e) || cueEndsSentence.has(e) ? 1 : 0.4,
-        reaction: clamp01(reactionSeconds(s, e) / 1.5),
-        action: motion.length ? clamp01((avgMotion(s, e) - motionMed) / (motionHi - motionMed) + 0.3) : 0
-      }
-      const totalW = Object.values(w).reduce((x, y) => x + y, 0)
-      const score = Math.round(((Object.keys(features) as (keyof SuggestionFeatures)[]).reduce((x, f) => x + w[f] * (features[f] ?? 0), 0) / totalW) * 100)
-
-      const reasons: string[] = []
-      if (features.energy >= 0.6) reasons.push(`Energia do áudio ${(meanDb - median).toFixed(1)} dB acima da mediana do vídeo`)
-      if (features.peak >= 0.75) reasons.push(`Pico de volume em ${formatTimecode(maxAt)} (grito, risada ou reação?)`)
-      if (features.speech >= 0.85) reasons.push(`Fala contínua em ${Math.round(features.speech * 100)}% do trecho`)
-      if ((features.action ?? 0) >= 0.7) reasons.push('Muita ação na tela')
-      const kinds = reactionKinds(s, e)
-      if (kinds.length) reasons.push(`Tem ${kinds.map((k) => (k === 'risada' ? 'risada' : 'grito/reação forte')).join(' e ')} no trecho`)
-      if (sceneN >= 2) reasons.push(`${sceneN} mudanças de cena — visual dinâmico`)
-      if (hookText) reasons.push(`Começa com gancho: “${firstText.slice(0, 60)}${firstText.length > 60 ? '…' : ''}”`)
-      else if (features.hook >= 0.6) reasons.push('Começo forte (volume alto nos 3 primeiros segundos)')
-      if (features.cleanStart === 1 && s !== 0) reasons.push('Começa logo após uma pausa ou início de frase')
-      if (features.cleanEnd === 1 && e !== D) reasons.push('Termina no fim de uma frase ou numa pausa')
-      if (features.cleanStart < 1) reasons.push('⚠ Pode começar no meio de uma fala')
-      if (features.cleanEnd < 1) reasons.push('⚠ Pode terminar no meio de uma fala')
-
-      const title = text ? (text.match(/[^.!?…]+[.!?…]?/)?.[0] ?? text).trim().slice(0, 70) : `Momento em ${formatTimecode(s)}`
-      candidates.push({ id: `s${Math.round(s * 100)}-${Math.round(e * 100)}`, startSec: s, endSec: e, score, features, reasons, title })
+      const c = sc.score(s, valid[k])
+      if (c) candidates.push(c)
     }
   }
 

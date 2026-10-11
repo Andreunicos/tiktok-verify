@@ -172,3 +172,20 @@ Pedido: deixar o app mais inteligente, com mais sons, e IA open source ilimitada
   - **Título na tela sempre que houver fala** (da IA ou a frase mais forte), cortado em ~50 caracteres.
 - **Testes:** `tests/instructions.test.ts`, Pollinations em `tests/freeai.test.ts`, modo automático que instala
   a transcrição e segue o pedido (2 cortes de ~20 s, pedido repassado à IA). E2E passando.
+
+## App mais inteligente: IA lê a live inteira, aprende com 👍/👎 e escreve o gancho da tela (2026-10-11)
+
+- **IA lê a transcrição inteira** (`discoverMoments` em `src/main/brain.ts`): a transcrição vira blocos de até
+  ~9 mil caracteres com o segundo de cada fala; para cada bloco a IA aponta momentos que funcionam sozinhos
+  (gancho, algo acontecendo, final). Tempos fora do bloco são descartados e durações ajustadas à faixa pedida.
+  Esses momentos ganham nota pelas mesmas regras (`scoreRange`, novo em `suggest.ts`) e entram antes dos
+  trechos das regras (repetidos saem). Depois a IA dá a nota final e escreve os textos, como antes.
+  Se nenhum bloco responder, o app avisa e segue só com as regras.
+- **Aprende com você**: botões 👍/👎 em cada corte pronto. Cada clique ajusta os pesos das regras
+  (`learnWeights`, o mesmo das sugestões do editor) e guarda o título/motivo em `taste` (até 20 de cada),
+  que vai junto nos pedidos para a IA ("gostou de… / não gostou de…").
+- **Texto de gancho na tela**: a IA escreve um `overlay` curto em CAIXA ALTA (ex.: "ELE NÃO ESPERAVA ISSO"),
+  que aparece no lugar do título comprido nos 3 primeiros segundos.
+- **Descrição** aparece no cartão do corte.
+- **Testes**: blocos da transcrição, prompt com pedido e gosto, junção/ajuste dos momentos com um bloco falhando,
+  erro quando nenhum responde; modo automático com momento da IA entrando no corte e 👍 guardado.

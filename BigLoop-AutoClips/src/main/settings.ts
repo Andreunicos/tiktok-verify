@@ -37,6 +37,7 @@ export function defaultSettings(paths: { outputDir: string }): AppSettings {
     cerebrasKeyEnc: '',
     openrouterKeyEnc: '',
     keylessAi: true,
+    taste: { liked: [], disliked: [] },
     smartDefaultsV1: false,
     onboardingDone: false,
     autoUpdate: true,

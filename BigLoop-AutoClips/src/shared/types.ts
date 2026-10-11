@@ -331,6 +331,8 @@ export interface AppSettings {
   openrouterKeyEnc: string
   /** IA grátis sem chave (Pollinations) quando não há chave ou as outras falham. */
   keylessAi: boolean
+  /** Gosto aprendido com 👍/👎 (títulos/motivos), enviado para a IA. */
+  taste: { liked: string[]; disliked: string[] }
   /** Já aplicou os novos padrões do modo automático (enquadramento inteligente e edição turbinada). */
   smartDefaultsV1: boolean
   onboardingDone: boolean
@@ -477,6 +479,10 @@ export interface AutoClip {
   durationSec: number
   score: number
   reasons: string[]
+  /** Características da nota (para aprender com 👍/👎). */
+  features?: SuggestionFeatures
+  /** O que a pessoa achou do corte. */
+  feedback?: 'up' | 'down'
   jobId?: string
   status: JobStatus | 'pendente'
   ratio: number

@@ -26,6 +26,7 @@ export const IPC = {
   aiSocial: 'ai:social',
   aiTranslate: 'ai:translate',
   aiTest: 'ai:test',
+  autoFeedback: 'auto:feedback',
   autoStart: 'auto:start',
   autoList: 'auto:list',
   autoCancel: 'auto:cancel',

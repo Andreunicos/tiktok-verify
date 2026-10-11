@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { blendScore, buildPlanPrompt, normalizePlan, planClips, type PlanCandidate } from '../src/main/brain'
+import { blendScore, buildMomentsPrompt, buildPlanPrompt, discoverMoments, normalizePlan, planClips, transcriptChunks, type PlanCandidate } from '../src/main/brain'
 import { chooseModel, extractJson, FREE_PROVIDERS, FreeAi } from '../src/main/freeai'
 
 type Handler = (url: string, init: RequestInit) => { status: number; body: unknown }
@@ -140,14 +140,14 @@ describe('cérebro do modo automático (plano da IA)', () => {
     const out = normalizePlan(
       {
         clips: [
-          { id: 's2', score: 140, title: '  Estratégia  ', description: 'd', hashtags: ['estrategia', '#game play', '#game play'], hook: '', keywords: ['a', 'estratégia'] },
-          { id: 'zz', score: 99, title: 'x', description: '', hashtags: [], hook: '', keywords: [] },
-          { id: 's2', score: 10, title: 'dup', description: '', hashtags: [], hook: '', keywords: [] }
+          { id: 's2', score: 140, title: '  Estratégia  ', description: 'd', hashtags: ['estrategia', '#game play', '#game play'], hook: '', overlay: '  ele não  esperava isso de jeito nenhum mesmo ', keywords: ['a', 'estratégia'] },
+          { id: 'zz', score: 99, title: 'x', description: '', hashtags: [], hook: '', overlay: '', keywords: [] },
+          { id: 's2', score: 10, title: 'dup', description: '', hashtags: [], hook: '', overlay: '', keywords: [] }
         ]
       },
       cands
     )
-    expect(out).toEqual([{ id: 's2', aiScore: 100, title: 'Estratégia', description: 'd', hashtags: ['#estrategia', '#gameplay'], hook: '', keywords: ['estratégia'] }])
+    expect(out).toEqual([{ id: 's2', aiScore: 100, title: 'Estratégia', description: 'd', hashtags: ['#estrategia', '#gameplay'], hook: '', overlay: 'ELE NÃO ESPERAVA ISSO DE JEITO NENHUM MESMO', keywords: ['estratégia'] }])
   })
   it('planClips usa qualquer IA com a mesma assinatura e aceita nota como texto', async () => {
     const ask = (async (_s: string, _u: string, schema: z.ZodTypeAny) =>
@@ -158,5 +158,53 @@ describe('cérebro do modo automático (plano da IA)', () => {
   it('nota final mistura IA e regras', () => {
     expect(blendScore(50, 100)).toBe(80)
     expect(blendScore(50, undefined)).toBe(50)
+  })
+})
+
+describe('IA lendo a transcrição inteira', () => {
+  const cues = Array.from({ length: 300 }, (_, i) => ({ startSec: i * 4, endSec: i * 4 + 3.5, text: `fala número ${i} com algumas palavras para encher o bloco` }))
+  it('divide a transcrição em blocos com o segundo de cada fala', () => {
+    const ch = transcriptChunks(cues, 2000)
+    expect(ch.length).toBeGreaterThan(5)
+    expect(ch[0].text.split('\n')[1]).toBe('[4] fala número 1 com algumas palavras para encher o bloco')
+    expect(ch[1].from).toBeGreaterThan(ch[0].to - 4)
+    expect(ch.every((c) => c.text.length <= 2100)).toBe(true)
+  })
+  it('prompt traz pedido e gosto aprendido', () => {
+    const p = buildMomentsPrompt('[0] oi', 20, 40, 3, 'só as zoeiras', { liked: ['Jogada absurda'], disliked: ['Explicação longa'] })
+    expect(p).toContain('Pedido de quem gravou: "só as zoeiras"')
+    expect(p).toContain('Gostou de: "Jogada absurda"')
+    expect(p).toContain('Não gostou de: "Explicação longa"')
+    expect(p).toContain('entre 20 e 40 segundos')
+  })
+  it('junta os momentos de todos os blocos, ajusta a duração e descarta tempos absurdos', async () => {
+    let call = 0
+    const ask = (async (_s: string, user: string, schema: z.ZodTypeAny) => {
+      call++
+      const first = Number(/\[(\d+)\]/.exec(user)![1])
+      if (call === 2) throw new Error('limite')
+      return schema.parse({
+        moments: [
+          { start: first + 10, end: first + 40, reason: 'história completa' },
+          { start: first + 50, end: first + 52, reason: 'curto demais → estica' },
+          { start: first + 100, end: first + 300, reason: 'longo demais → corta' },
+          { start: 99999, end: 100030, reason: 'fora do bloco' }
+        ]
+      })
+    }) as any
+    const ms = await discoverMoments(ask, cues, { minSec: 20, maxSec: 45, count: 3, durationSec: 1200, maxChunks: 3 })
+    expect(call).toBe(3)
+    // bloco 2 falhou, os outros contam; nada fora da faixa 20–45 s nem fora do bloco
+    expect(ms[0]).toEqual({ startSec: 10, endSec: 40, reason: 'história completa' })
+    expect(ms[1]).toMatchObject({ startSec: 50, endSec: 70 })
+    expect(ms[2]).toMatchObject({ startSec: 100, endSec: 145 })
+    expect(ms.length).toBeGreaterThan(3)
+    expect(ms.every((m) => m.endSec - m.startSec >= 16 && m.endSec - m.startSec <= 45 && m.startSec < 2000)).toBe(true)
+  })
+  it('se nenhum bloco responder, o erro sobe (o app avisa e usa as regras)', async () => {
+    const ask = (async () => {
+      throw new Error('fora do ar')
+    }) as any
+    await expect(discoverMoments(ask, cues, { minSec: 20, maxSec: 45, count: 3, durationSec: 1200, maxChunks: 2 })).rejects.toThrow('fora do ar')
   })
 })

@@ -386,3 +386,7 @@ details > summary { cursor: pointer; margin-bottom: 6px; }
 .wish { display: grid; gap: 6px; margin: 14px 0 6px; }
 .wish textarea { width: 100%; resize: vertical; min-height: 56px; padding: 10px 12px; border-radius: 12px; border: 2px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
 .wish textarea:focus { outline: none; border-color: var(--accent); }
+
+.feedback { gap: 6px; align-items: center; margin: 4px 0; }
+.feedback button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.clip-desc { margin: 2px 0; }
