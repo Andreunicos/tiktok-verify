@@ -105,7 +105,7 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     const run = pilot.start(live, opts())
     const done = await waitDone(pilot, run.id)
     expect(done.state).toBe('concluído')
-    expect(done.steps.map((s) => `${s.key}:${s.state}`)).toEqual(['ler:ok', 'analisar:ok', 'transcrever:pulado', 'escolher:ok', 'limpar:pulado', 'trilha:pulado', 'editar:ok', 'exportar:ok'])
+    expect(done.steps.map((s) => `${s.key}:${s.state}`)).toEqual(['ler:ok', 'analisar:ok', 'transcrever:pulado', 'escolher:ok', 'limpar:ok', 'trilha:pulado', 'editar:ok', 'exportar:ok'])
     expect(done.clips).toHaveLength(3)
     expect(done.notes.join(' ')).toMatch(/sem legenda/)
     const folder = join(outDir, 'minha live')
@@ -195,6 +195,35 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     expect(done.state).toBe('concluído')
     expect(done.notes.join(' ')).toMatch(/IA indisponível agora \(Limite grátis do Groq/)
     expect(done.clips).toHaveLength(1)
+  })
+
+  it('gameplay sem fala: acha a ação, abre com o pico e usa o layout de jogo', async () => {
+    const game = join(dir, 'gameplay.mp4')
+    // 0–40 s parado e baixo; 40–60 s ação (imagem mexendo + barulho alto, pico em 52 s); 60–90 s parado
+    const r = spawnSync(ffmpeg!, [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'color=c=0x334455:size=640x360:rate=30:duration=40',
+      '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=20',
+      '-f', 'lavfi', '-i', 'color=c=0x334455:size=640x360:rate=30:duration=30',
+      '-f', 'lavfi', '-i', 'anoisesrc=d=90:a=0.02',
+      '-filter_complex',
+      "[0:v][1:v][2:v]concat=n=3:v=1[v];[3:a]volume='if(between(t\\,40\\,60)\\,if(between(t\\,51.5\\,53)\\,30\\,8)\\,1)':eval=frame[a]",
+      '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', game
+    ])
+    expect(r.status).toBe(0)
+    const { pilot, projects } = setup(false)
+    const done = await waitDone(pilot, pilot.start(game, opts({ count: 1, framing: 'auto', cleanSpeech: true })).id)
+    expect(done.state).toBe('concluído')
+    const a = projects.getAnalysis(done.projectId)!
+    expect(a.motion!.length).toBeGreaterThan(80)
+    expect(Math.max(...a.motion!.slice(42, 58))).toBeGreaterThan(Math.max(...a.motion!.slice(5, 35)) + 1)
+    const seg = projects.get(done.projectId)!.segments.at(-1)!
+    // o corte cobre a ação e abre com o pico (gancho) antes de seguir
+    expect(seg.ranges.some((x) => x.startSec <= 52 && x.endSec >= 52)).toBe(true)
+    expect(seg.ranges.length).toBeGreaterThanOrEqual(2)
+    expect(seg.ranges[0].startSec).toBeGreaterThan(seg.ranges[1].startSec)
+    expect(done.clips[0].reasons.join(' ')).toMatch(/ação|Energia|Pico/)
+    expect(probeJson(done.clips[0].outputPath!).streams.find((s: { codec_type: string }) => s.codec_type === 'video').height).toBe(1920)
   })
 
   it('cancelar para tudo', async () => {

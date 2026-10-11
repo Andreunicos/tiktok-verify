@@ -70,7 +70,8 @@ export interface Transcript {
 // ───────────── Exportação ─────────────
 export type CutMode = 'precise' | 'fast'
 export type AspectRatio = 'original' | '9:16' | '16:9' | '1:1' | '4:5'
-export type FitMode = 'crop' | 'blur' | 'pad'
+/** crop = preenche cortando; blur = vídeo inteiro com fundo desfocado; pad = barras pretas; game = jogo ampliado no meio (corta um pouco das laterais) com fundo desfocado. */
+export type FitMode = 'crop' | 'blur' | 'pad' | 'game'
 export type Quality = 'high' | 'medium' | 'small'
 export type OutputFormat = 'mp4' | 'mp3' | 'wav' | 'gif'
 export type VideoEncoder = 'libx264' | 'libx265' | 'h264_nvenc' | 'hevc_nvenc' | 'h264_qsv' | 'hevc_qsv' | 'h264_amf' | 'hevc_amf'
@@ -220,6 +221,8 @@ export interface AnalysisResult {
   scenes: number[]
   hasAudio: boolean
   createdAt: number
+  /** Movimento da imagem por segundo (diferença média entre quadros; análises antigas não têm). */
+  motion?: number[]
   /** Risadas e gritos detectados no áudio (análises antigas não têm). */
   reactions?: { startSec: number; endSec: number; kind: 'risada' | 'grito' }[]
 }
@@ -234,6 +237,8 @@ export interface SuggestionFeatures {
   cleanEnd: number
   /** Risada ou grito dentro do trecho. */
   reaction?: number
+  /** Muita ação na imagem (movimento acima do normal do vídeo). */
+  action?: number
 }
 
 export interface Suggestion {
@@ -436,7 +441,7 @@ export interface AutoOptions {
   /** Tira "éé", "hum" e pausas longas (precisa de transcrição com tempo por palavra). */
   cleanSpeech: boolean
   /** auto = segue a pessoa quando ela aparece grande, senão vídeo inteiro; blur = vídeo inteiro com fundo desfocado; crop = preenche a tela. */
-  framing: 'auto' | 'blur' | 'crop'
+  framing: 'auto' | 'game' | 'blur' | 'crop'
   /** Música de fundo pelo clima, ou nenhuma. */
   music: Mood | 'nenhuma'
   /** Efeitos sonoros nos momentos certos (entrada, palavras de destaque, picos). */

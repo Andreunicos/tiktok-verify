@@ -52,8 +52,11 @@ describe.skipIf(!ffmpeg || !ffprobe)('Análise com FFmpeg real', () => {
       '-c:v', 'libx264', '-preset', 'ultrafast', scenes
     ])
     expect(r.status).toBe(0)
-    const times = await detectScenes(scenes, 6, { ffmpegPath: ffmpeg! })
+    const { scenes: times, motion } = await detectScenes(scenes, 6, { ffmpegPath: ffmpeg! })
     expect(times).toHaveLength(2)
+    // movimento por segundo: 6 valores; o trecho em movimento tem mais que o parado
+    expect(motion.length).toBeGreaterThanOrEqual(5)
+    expect(Math.max(...motion)).toBeGreaterThan(Math.min(...motion.slice(0, 5)))
     expect(Math.abs(times[0] - 2)).toBeLessThan(0.25)
     expect(Math.abs(times[1] - 4)).toBeLessThan(0.25)
   })

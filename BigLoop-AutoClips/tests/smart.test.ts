@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { detectReactions, PcmAnalyzer } from '../src/shared/analysis'
-import { findPhrase, planEffects, planZooms, snapToSentences, strongMoments, toOutputTime, trackExpr, withTeaser, zoomExpr } from '../src/shared/smart'
+import { findPhrase, peakTeaserRange, removeDeadTime, planEffects, planZooms, snapToSentences, strongMoments, toOutputTime, trackExpr, withTeaser, zoomExpr } from '../src/shared/smart'
 import { analyzeFrame, centerToCropX, decideTrack, type FrameSample } from '../src/shared/track'
 import { buildAss } from '../src/shared/subtitles'
 import { DEFAULT_EXPORT } from '../src/shared/presets'
@@ -69,9 +69,12 @@ describe('efeitos e zooms nos momentos certos', () => {
   })
   it('planeja whoosh na entrada, impacto no maior pico e ding na palavra', () => {
     const fx = planEffects({ ...base, teaserSec: 2 }, () => true)
-    expect(fx.map((f) => f.key)).toEqual(['whoosh', 'rebobinar', 'impacto', 'ding'])
+    // ding da palavra (20 s) fica de fora: muito perto do impacto (15,45 s) — menos efeitos, mais espaçados
+    expect(fx.map((f) => f.key)).toEqual(['whoosh', 'rebobinar', 'impacto'])
     expect(fx.find((f) => f.key === 'impacto')!.atSec).toBeCloseTo(15.45, 2)
-    expect(fx.find((f) => f.key === 'ding')!.atSec).toBe(20)
+    const calm = planEffects({ ...base, rmsDb: Array(60).fill(-26) }, () => true)
+    expect(calm.map((f) => f.key)).toEqual(['whoosh', 'ding'])
+    expect(calm[1].atSec).toBe(20)
   })
   it('só usa efeitos que existem', () => {
     expect(planEffects(base, (k) => k === 'whoosh').map((f) => f.key)).toEqual(['whoosh'])
@@ -187,5 +190,30 @@ describe('título na tela e palavras-chave na legenda', () => {
     expect(ass).toContain('Style: Title,')
     expect(ass).toMatch(/Dialogue: 1,0:00:00\.00,0:00:03\.20,Title,,0,0,0,,\{\\fad\(150,250\)\}A JOGADA MAIS ABSURDA/)
     expect(ass).toMatch(/\{\\c&H0088FF4D\\fscx115\\fscy115\}ABSURDO\{\\r\}/)
+  })
+})
+
+describe('ritmo de gameplay (sem fala)', () => {
+  it('tira tempo morto: silêncio + imagem parada; mantém silêncio com ação', () => {
+    const motion = Array.from({ length: 60 }, (_, i) => (i >= 10 && i < 14 ? 0.2 : 5))
+    const silences = [
+      { startSec: 10, endSec: 14 }, // parado e quieto → sai
+      { startSec: 30, endSec: 34 } // quieto mas com ação → fica
+    ]
+    expect(removeDeadTime({ startSec: 0, endSec: 50 }, silences, motion)).toEqual([
+      { startSec: 0, endSec: 10.25 },
+      { startSec: 13.75, endSec: 50 }
+    ])
+  })
+  it('sem dados de movimento só tira silêncio longo', () => {
+    expect(removeDeadTime({ startSec: 0, endSec: 20 }, [{ startSec: 5, endSec: 6.8 }], undefined)).toEqual([{ startSec: 0, endSec: 20 }])
+    expect(removeDeadTime({ startSec: 0, endSec: 20 }, [{ startSec: 5, endSec: 9 }], undefined)).toHaveLength(2)
+  })
+  it('gancho sem fala: momento mais intenso depois dos 6 s', () => {
+    const rmsDb = Array.from({ length: 60 }, (_, i) => (i === 25 ? -5 : i === 3 ? -2 : -25))
+    const motion = Array.from({ length: 60 }, (_, i) => (i === 25 ? 12 : 3))
+    expect(peakTeaserRange([{ startSec: 0, endSec: 40 }], rmsDb, motion)).toEqual({ startSec: 23.8, endSec: 26.3 })
+    // tudo igual: sem gancho
+    expect(peakTeaserRange([{ startSec: 0, endSec: 40 }], Array(60).fill(-20), Array(60).fill(3))).toBeNull()
   })
 })

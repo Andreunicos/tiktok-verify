@@ -133,3 +133,24 @@ Pedido: deixar o app mais inteligente, com mais sons, e IA open source ilimitada
 - **Limites honestos**: a detecção de risada e de pessoa é heurística (pode errar em jogos com muita cor de pele
   ou fala muito animada); a IA grátis depende dos limites e da disponibilidade de cada serviço. Não foi testado
   contra o Groq real daqui (rede bloqueada); o formato é o OpenAI-compatível documentado.
+
+## "Cortes feios e chatos" em gameplay sem webcam (2026-10-11)
+
+- **Relato:** visual, música, momentos escolhidos e texto ruins. Conteúdo: gameplay sem webcam.
+- **Causas prováveis:** o jogo ficava pequeno (faixa de ~32% da altura) no meio do fundo desfocado; a escolha
+  dos trechos só olhava o som (sem fala, quase tudo parecia igual); tempo parado ficava dentro do corte; a trilha
+  sintetizada pelo app soava artificial; título em caixa branca parecia barato; efeitos demais.
+- **Mudanças:**
+  - **Jogo em destaque** (`fit: 'game'`): faixa ampliada 1,5× no meio (~47% da altura, ~67% da largura),
+    fundo desfocado e escurecido; título em cima e legenda embaixo. "Inteligente" usa isso quando não há pessoa.
+  - **Movimento da imagem** medido na mesma passada da detecção de cenas (`signalstats` YDIF, 5 quadros/s) →
+    característica “Ação na tela” na nota e começos de corte 2–5 s antes dos momentos mais intensos.
+  - **Tempo morto** (silêncio + imagem parada ≥1,5 s) sai do corte mesmo sem transcrição (`removeDeadTime`).
+  - **Gancho sem fala**: o momento mais intenso do corte (som + ação) aparece 2,5 s no começo (`peakTeaserRange`).
+  - **Música real primeiro**: busca no Openverse com várias palavras por clima, aceitando CC BY (crédito vai
+    automático na descrição); a trilha gerada pelo app virou último recurso e toca mais baixa (0,16).
+  - **Texto**: título sem caixa (branco, contorno preto, sombra); barra de progresso fina e amarela; no máximo
+    4 efeitos por corte, mais baixos e mais espaçados.
+- **Testes:** gameplay sintético (parado → ação com pico → parado): o corte cobre a ação, abre com o pico e sai
+  em 1080×1920; testes de `removeDeadTime`, `peakTeaserRange`, `parseScenesAndMotion` e do layout de jogo.
+  214+ testes e E2E passando.

@@ -10,7 +10,8 @@ export const DEFAULT_WEIGHTS: Record<keyof SuggestionFeatures, number> = {
   hook: 1,
   cleanStart: 0.6,
   cleanEnd: 0.6,
-  reaction: 1.3
+  reaction: 1.3,
+  action: 1.2
 }
 
 export const FEATURE_LABELS: Record<keyof SuggestionFeatures, string> = {
@@ -21,7 +22,8 @@ export const FEATURE_LABELS: Record<keyof SuggestionFeatures, string> = {
   hook: 'Gancho',
   cleanStart: 'Início limpo',
   cleanEnd: 'Final limpo',
-  reaction: 'Risada/grito'
+  reaction: 'Risada/grito',
+  action: 'Ação na tela'
 }
 
 const HOOK_WORDS =
@@ -66,6 +68,19 @@ export function suggestClips({ analysis, cues, options, weights }: SuggestInput)
   // Sem pausas suficientes: grade de 2 em 2 segundos
   if (starts.size < 8) for (let t = 0; t < D; t += 2) starts.add(t)
   if (ends.size < 8) for (let t = options.minSec; t <= D; t += 2) ends.add(t)
+  // Começos logo antes dos momentos mais fortes (som alto + muita ação), para o corte já abrir na ação
+  const motion = analysis.motion ?? []
+  const motionMed = percentile(motion.filter((m) => m > 0), 50)
+  const motionHi = Math.max(motionMed + 0.5, percentile(motion.filter((m) => m > 0), 90))
+  const intensity = secDb.map((db, i) => (db - median) / spread + (motion.length ? ((motion[i] ?? 0) - motionMed) / (motionHi - motionMed) : 0))
+  const hot = intensity
+    .map((v, i) => ({ v, i }))
+    .sort((a, b) => b.v - a.v)
+    .filter((h) => h.v > 0.5)
+    .slice(0, 12)
+  for (const h of hot) {
+    for (const back of [2, 5]) if (h.i - back >= 0) starts.add(h.i - back)
+  }
 
   const startList = [...starts].filter((t) => t >= 0 && t < D - options.minSec).sort((a, b) => a - b)
   const endList = [...ends].filter((t) => t > 0 && t <= D).sort((a, b) => a - b)
@@ -76,6 +91,10 @@ export function suggestClips({ analysis, cues, options, weights }: SuggestInput)
 
   const silentSeconds = (a: number, b: number) =>
     analysis.silences.reduce((sum, s) => sum + overlap(s, { startSec: a, endSec: b }), 0)
+  const avgMotion = (a: number, b: number) => {
+    const xs = motion.slice(Math.floor(a), Math.ceil(b))
+    return xs.length ? xs.reduce((x, y) => x + y, 0) / xs.length : 0
+  }
   const reactions = analysis.reactions ?? []
   const reactionSeconds = (a: number, b: number) => reactions.reduce((sum, r) => sum + overlap(r, { startSec: a, endSec: b }), 0)
   const reactionKinds = (a: number, b: number) => [...new Set(reactions.filter((r) => overlap(r, { startSec: a, endSec: b }) > 0.3).map((r) => r.kind))]
@@ -116,7 +135,8 @@ export function suggestClips({ analysis, cues, options, weights }: SuggestInput)
         hook: hookText ? 1 : analysis.hasAudio ? clamp01((openingLoud - median) / spread) * 0.7 : 0,
         cleanStart: s === 0 || silenceEnds.has(s) || cueStarts.has(s) ? 1 : 0.4,
         cleanEnd: e === D || silenceStarts.has(e) || cueEndsSentence.has(e) ? 1 : 0.4,
-        reaction: clamp01(reactionSeconds(s, e) / 1.5)
+        reaction: clamp01(reactionSeconds(s, e) / 1.5),
+        action: motion.length ? clamp01((avgMotion(s, e) - motionMed) / (motionHi - motionMed) + 0.3) : 0
       }
       const totalW = Object.values(w).reduce((x, y) => x + y, 0)
       const score = Math.round(((Object.keys(features) as (keyof SuggestionFeatures)[]).reduce((x, f) => x + w[f] * (features[f] ?? 0), 0) / totalW) * 100)
@@ -125,6 +145,7 @@ export function suggestClips({ analysis, cues, options, weights }: SuggestInput)
       if (features.energy >= 0.6) reasons.push(`Energia do áudio ${(meanDb - median).toFixed(1)} dB acima da mediana do vídeo`)
       if (features.peak >= 0.75) reasons.push(`Pico de volume em ${formatTimecode(maxAt)} (grito, risada ou reação?)`)
       if (features.speech >= 0.85) reasons.push(`Fala contínua em ${Math.round(features.speech * 100)}% do trecho`)
+      if ((features.action ?? 0) >= 0.7) reasons.push('Muita ação na tela')
       const kinds = reactionKinds(s, e)
       if (kinds.length) reasons.push(`Tem ${kinds.map((k) => (k === 'risada' ? 'risada' : 'grito/reação forte')).join(' e ')} no trecho`)
       if (sceneN >= 2) reasons.push(`${sceneN} mudanças de cena — visual dinâmico`)

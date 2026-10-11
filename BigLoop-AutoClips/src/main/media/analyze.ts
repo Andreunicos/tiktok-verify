@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { detectReactions, detectSilences, downsamplePeaks, PcmAnalyzer, parseShowinfoTimes, perSecondDb, WINDOW_SEC } from '../../shared/analysis'
+import { detectReactions, detectSilences, downsamplePeaks, PcmAnalyzer, parseScenesAndMotion, perSecondDb, WINDOW_SEC } from '../../shared/analysis'
 import type { AnalysisResult, MediaMetadata } from '../../shared/types'
 
 const SAMPLE_RATE = 8000
@@ -78,11 +78,11 @@ export function analyzeAudio(
   })
 }
 
-/** Detecta mudanças de cena em baixa resolução (5 quadros/s, 160 px). */
-export function detectScenes(path: string, durationSec: number, opts: AnalyzeOptions): Promise<number[]> {
+/** Detecta mudanças de cena e mede o movimento da imagem em baixa resolução (5 quadros/s, 160 px). */
+export function detectScenes(path: string, durationSec: number, opts: AnalyzeOptions): Promise<{ scenes: number[]; motion: number[] }> {
   return new Promise((resolve, reject) => {
     const th = opts.sceneThreshold ?? 0.35
-    const args = ['-hide_banner', '-nostdin', '-i', path, '-map', '0:v:0', '-an', '-vf', `fps=5,scale=160:-2,select='gt(scene\\,${th})',showinfo`, '-f', 'null', '-']
+    const args = ['-hide_banner', '-nostdin', '-i', path, '-map', '0:v:0', '-an', '-vf', `fps=5,scale=160:-2,signalstats,metadata=mode=print:key=lavfi.signalstats.YDIF,select='gt(scene\\,${th})',showinfo`, '-f', 'null', '-']
     let child
     try {
       child = spawnTracked(opts.ffmpegPath, args, opts.signal)
@@ -94,7 +94,7 @@ export function detectScenes(path: string, durationSec: number, opts: AnalyzeOpt
     let tail = ''
     child.stderr.on('data', (d: Buffer) => {
       const s = d.toString()
-      text += s.split('\n').filter((l) => l.includes('pts_time')).join('\n') + '\n'
+      text += s.split('\n').filter((l) => l.includes('pts_time') || l.includes('YDIF=')).join('\n') + '\n'
       tail = (tail + s).slice(-2000)
       const t = /time=(\d+):(\d+):([\d.]+)/.exec(s)
       if (t && durationSec > 0) opts.onProgress?.('cenas', Math.min(1, (+t[1] * 3600 + +t[2] * 60 + +t[3]) / durationSec))
@@ -103,7 +103,7 @@ export function detectScenes(path: string, durationSec: number, opts: AnalyzeOpt
     child.on('close', (code) => {
       if (opts.signal?.aborted) return reject(new AbortedError())
       if (code !== 0) return reject(new Error(`Falha ao detectar cenas: ${tail.trim().split('\n').pop() ?? code}`))
-      resolve(parseShowinfoTimes(text))
+      resolve(parseScenesAndMotion(text))
     })
   })
 }
@@ -113,8 +113,8 @@ export async function analyzeMedia(meta: MediaMetadata, opts: AnalyzeOptions): P
   const audio = hasAudio
     ? await analyzeAudio(meta.path, meta.durationSec, opts)
     : { peaks: [], bucketSec: 1, rmsDb: [], silences: [], reactions: [] }
-  const scenes = meta.video && opts.detectScenes !== false ? await detectScenes(meta.path, meta.durationSec, opts) : []
-  return { durationSec: meta.durationSec, ...audio, scenes, hasAudio, createdAt: Date.now() }
+  const vis = meta.video && opts.detectScenes !== false ? await detectScenes(meta.path, meta.durationSec, opts) : { scenes: [], motion: [] }
+  return { durationSec: meta.durationSec, ...audio, scenes: vis.scenes, motion: vis.motion, hasAudio, createdAt: Date.now() }
 }
 
 /**

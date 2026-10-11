@@ -74,6 +74,18 @@ export function aspectGraph(inLabel: string, outLabel: string, o: ExportOptions,
   const xPos = track && track.length > 0 ? `'(iw-${W})*(${trackExpr(track)})'` : `(iw-${W})*${cx}`
   const cover = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:${xPos}:(ih-${H})*${cy}`
   if (o.fit === 'crop') return `${inLabel}${cover},setsar=1${outLabel}`
+  if (o.fit === 'game') {
+    // Jogo em destaque: faixa ampliada 1,5× no meio (mostra ~67% da largura) sobre fundo desfocado e escurecido
+    const zoom = 1.5
+    const bandW = Math.round((W * zoom) / 2) * 2
+    const bandH = Math.min(H, Math.round((srcH * bandW) / srcW / 2) * 2)
+    return [
+      `${inLabel}split=2[bgsrc][fgsrc]`,
+      `[bgsrc]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=30:3,eq=brightness=-0.18:saturation=1.3[bg]`,
+      `[fgsrc]scale=${bandW}:${bandH},crop=${W}:${bandH}:(iw-${W})*${cx}:0[fg]`,
+      `[bg][fg]overlay=0:(H-h)/2,setsar=1${outLabel}`
+    ].join(';')
+  }
   if (o.fit === 'pad')
     return `${inLabel}scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1${outLabel}`
   // blur: fundo ampliado e desfocado + vídeo inteiro centralizado
@@ -174,8 +186,8 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
       vNow = '[vzoom]'
     }
     if (visual?.progressBar && o.aspect !== 'original') {
-      const barH = Math.max(6, Math.round(OH * 0.0075))
-      graph.push(`color=c=white@0.9:s=${OW}x${barH}:r=${fps}:d=${n3(duration)},format=rgba[pbar]`, `${vNow}[pbar]overlay=x='-w+w*t/${n3(duration)}':y=H-${barH}:eof_action=pass[vbar]`)
+      const barH = Math.max(4, Math.round(OH * 0.004))
+      graph.push(`color=c=0xFFD400@0.95:s=${OW}x${barH}:r=${fps}:d=${n3(duration)},format=rgba[pbar]`, `${vNow}[pbar]overlay=x='-w+w*t/${n3(duration)}':y=H-${barH}:eof_action=pass[vbar]`)
       vNow = '[vbar]'
     }
     if (o.fadeInSec > 0) post.push(`fade=t=in:st=0:d=${n3(o.fadeInSec)}`)

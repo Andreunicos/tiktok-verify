@@ -6,14 +6,15 @@ import type { SoundLibrary } from './sounds'
 /** Openverse: catálogo aberto (WordPress) de áudio com licenças Creative Commons e domínio público. */
 export const OPENVERSE_API = 'https://api.openverse.org/v1/audio/'
 
-/** Buscas usadas para cada clima de música. */
-export const MOOD_QUERY: Record<Mood, string> = {
-  animada: 'upbeat energetic',
-  calma: 'calm ambient',
-  epica: 'epic cinematic',
-  lofi: 'lofi chill beat',
-  engracada: 'funny comedy'
+/** Buscas usadas para cada clima de música (tenta na ordem até achar faixas suficientes). */
+export const MOOD_QUERIES: Record<Mood, string[]> = {
+  animada: ['upbeat electronic', 'energetic', 'dance', 'electronic'],
+  calma: ['calm ambient', 'chill', 'ambient', 'piano'],
+  epica: ['epic cinematic', 'epic', 'cinematic', 'trailer'],
+  lofi: ['lofi', 'lo-fi hip hop', 'chillhop', 'hip hop beat'],
+  engracada: ['funny', 'comedy', 'quirky', 'ukulele']
 }
+export const MOOD_QUERY: Record<Mood, string> = Object.fromEntries(Object.entries(MOOD_QUERIES).map(([k, v]) => [k, v[0]])) as Record<Mood, string>
 
 export interface SearchOptions {
   query: string
