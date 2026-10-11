@@ -78,6 +78,23 @@ describe.skipIf(!ffmpeg || !ffprobe)('Biblioteca de sons', () => {
     expect(new SoundLibrary(join(dir, 'lib')).list('efeito')).toHaveLength(GENERATED_EFFECTS.length)
   })
 
+  it('gera a trilha do clima sem internet (WAV válido, CC0) e reaproveita depois', async () => {
+    const lib = new SoundLibrary(join(dir, 'lib-musica'))
+    const a = await lib.ensureGeneratedMusic('lofi')
+    const b = await lib.ensureGeneratedMusic('lofi')
+    expect(b.id).toBe(a.id)
+    expect(a.kind).toBe('musica')
+    expect(a.mood).toBe('lofi')
+    expect(a.origin).toBe('gerado')
+    expect(a.license).toMatch(/CC0/)
+    const r = spawnSync(ffprobe!, ['-v', 'error', '-show_entries', 'stream=codec_name,sample_rate,channels:format=duration', '-of', 'csv=p=0', a.file])
+    const out = r.stdout.toString()
+    expect(out).toContain('pcm_s16le,48000,2')
+    expect(Math.abs(Number(out.trim().split('\n').pop()) - a.durationSec)).toBeLessThan(0.05)
+    expect(lib.pick('musica', 'lofi')?.id).toBe(a.id)
+    expect(new SoundLibrary(join(dir, 'lib-musica')).list('musica')).toHaveLength(1)
+  })
+
   it('busca no Openverse só CC0/domínio público e baixa com metadados', async () => {
     const lib = new SoundLibrary(join(dir, 'lib'))
     const results = await searchOpenverse({ query: 'calm', kind: 'musica', api: `${base}/v1/audio/` })

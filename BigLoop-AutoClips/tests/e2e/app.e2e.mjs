@@ -71,6 +71,7 @@ const mock = createServer(async (req, res) => {
   for await (const c of req) chunks.push(c)
   const raw = Buffer.concat(chunks)
   const json = (st, b) => (res.writeHead(st, { 'content-type': 'application/json' }), res.end(JSON.stringify(b)))
+  if (url.pathname === '/openverse/v1/audio/' && /lofi/.test(url.searchParams.get('q') ?? '')) return json(503, { detail: 'fora do ar' })
   if (url.pathname === '/openverse/v1/audio/')
     return json(200, { results: [{ id: 'calm1', title: 'Calm Test Loop', creator: 'Ana', license: 'cc0', url: `${mockBase}/files/calma.mp3`, duration: 20000, filetype: 'mp3' }] })
   if (url.pathname === '/files/calma.mp3') {
@@ -193,6 +194,18 @@ try {
   await page.waitForSelector('text=cortes prontos!', { timeout: 240000 })
   const trilha = await page.locator('.step', { hasText: 'Colocando música e efeitos' }).textContent()
   assert.ok(/Calm Test Loop/.test(trilha), `trilha: ${trilha}`)
+
+  step('Openverse fora do ar: usa a trilha gerada pelo app (Lo-fi)')
+  await page.click('nav >> text=Criar cortes')
+  await mockOpen(video)
+  await page.click('.hero-drop')
+  await page.locator('.choices').nth(1).getByRole('button', { name: '3' }).click()
+  await page.getByRole('button', { name: 'Lo-fi' }).click()
+  await page.click('button.cta')
+  await page.waitForSelector('text=cortes prontos!', { timeout: 240000 })
+  const trilhaGerada = await page.locator('.step', { hasText: 'Colocando música e efeitos' }).textContent()
+  assert.ok(/Tarde Lo-fi/.test(trilhaGerada), `trilha gerada: ${trilhaGerada}`)
+  assert.ok(existsSync(join(userData, 'sons', 'arquivos', 'musica-gerada-lofi.wav')), 'WAV da trilha gerada')
 
   step('TikTok (simulado): conectar, rascunho e postagem com confirmação')
   await page.click('button[aria-label="Configurações"]')

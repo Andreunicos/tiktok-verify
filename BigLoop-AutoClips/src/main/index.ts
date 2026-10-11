@@ -64,6 +64,8 @@ let hwEncoders: VideoEncoder[] | null = null
 let updates: UpdateController
 let autopilot: AutoPilot
 let sounds: SoundLibrary
+/** Climas em que já tentamos baixar música do Openverse nesta sessão. */
+const openverseTried = new Set<string>()
 let tiktok: TikTokSession
 const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
 const tasks = new Map<string, AbortController>()
@@ -455,22 +457,29 @@ function setupAutopilot(): void {
         return generateSocialCopy(decryptSecret(s.aiKeyEnc), s.aiModel, text, platform)
       },
       pickMusic: async (mood, signal) => {
-        let item = sounds.pick('musica', mood)
-        if (!item) {
-          // Biblioteca vazia nesse clima: baixa algumas músicas livres (CC0/domínio público) do Openverse
-          const results = (await searchOpenverse({ query: MOOD_QUERY[mood], kind: 'musica', api: process.env.BIGLOOP_OPENVERSE_API || undefined })).filter((r) => (r.durationSec ?? 60) >= 20)
-          if (results.length === 0) throw new Error('nenhuma música livre encontrada no Openverse para esse clima.')
-          for (const r of results.slice(0, 3)) {
-            if (signal.aborted) break
-            try {
-              await downloadToLibrary(r, 'musica', mood, sounds, { signal })
-            } catch (err) {
-              log('warn', 'Falha ao baixar música', err)
+        // 1) Músicas baixadas/importadas desse clima; 2) tenta o Openverse uma vez por sessão;
+        // 3) sempre sobra a trilha gerada pelo app (funciona sem internet).
+        const own = () => sounds.list('musica').filter((i) => i.mood === mood && i.origin !== 'gerado')
+        if (own().length === 0 && !openverseTried.has(mood)) {
+          openverseTried.add(mood)
+          try {
+            const timeout = AbortSignal.any([signal, AbortSignal.timeout(45_000)])
+            const results = (await searchOpenverse({ query: MOOD_QUERY[mood], kind: 'musica', api: process.env.BIGLOOP_OPENVERSE_API || undefined })).filter((r) => (r.durationSec ?? 60) >= 20)
+            for (const r of results.slice(0, 3)) {
+              if (timeout.aborted) break
+              try {
+                await downloadToLibrary(r, 'musica', mood, sounds, { signal: timeout })
+              } catch (err) {
+                log('warn', 'Falha ao baixar música', err)
+              }
             }
+          } catch (err) {
+            log('warn', 'Openverse indisponível; usando trilha gerada pelo app', err)
           }
-          item = sounds.pick('musica', mood)
-          if (!item) throw new Error('não deu para baixar músicas agora.')
         }
+        if (signal.aborted) return null
+        const pool = own()
+        const item = pool.length ? pool[Math.floor(Math.random() * pool.length)] : await sounds.ensureGeneratedMusic(mood)
         return { file: item.file, title: item.title, attribution: item.attribution }
       },
       pickEffect: (key) => sounds.list('efeito').find((i) => i.origin === 'gerado' && i.tags.includes(key))?.file ?? null,

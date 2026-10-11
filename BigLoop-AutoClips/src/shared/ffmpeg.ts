@@ -187,8 +187,9 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
         `[${musicIdx}:a:0]${fmt},atrim=duration=${n3(duration)},volume=${vol},afade=t=in:st=0:d=${n3(Math.min(1, duration / 4))},afade=t=out:st=${n3(Math.max(0, duration - fadeOut))}:d=${n3(fadeOut)}[mus]`
       )
       if (hasVoice && music.duck) {
-        // Música abaixa sozinha quando há voz (a voz é a "chave" do compressor)
-        graph.push('[avoice]asplit=2[vmain][vkey]', '[mus][vkey]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350:makeup=1[musd]')
+        // Música abaixa sozinha quando há voz (a voz é a "chave" do compressor). Ratio moderado: com
+        // ratio alto a música some em lives com voz alta, onde quase sempre tem alguém falando.
+        graph.push('[avoice]asplit=2[vmain][vkey]', '[mus][vkey]sidechaincompress=threshold=0.01:ratio=4:attack=20:release=400:makeup=1[musd]')
         layers.push('[vmain]', '[musd]')
       } else {
         if (hasVoice) layers.push('[avoice]')

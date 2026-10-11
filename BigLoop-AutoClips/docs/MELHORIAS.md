@@ -142,4 +142,4 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 
 **Resumo:** 70 ✅ · 22 🟡 · 8 ❌
 
-Extras fora da lista original: biblioteca de sons (Openverse + efeitos gerados), música com ducking, efeitos sonoros.
+Extras fora da lista original: biblioteca de sons (Openverse + efeitos gerados), trilhas geradas pelo app (funcionam sem internet), música com ducking, efeitos sonoros.

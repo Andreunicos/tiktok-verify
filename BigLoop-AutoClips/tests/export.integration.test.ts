@@ -159,6 +159,8 @@ describe.skipIf(!ffmpeg || !ffprobe)('Exportação com FFmpeg real', () => {
     const musicWithVoice = band(220, 0.6, 1.6)
     const musicAlone = band(220, 2.6, 3.6) // loop da música (3 s) continua depois de acabar
     expect(musicAlone - musicWithVoice).toBeGreaterThan(6)
+    // …mas continua audível embaixo da voz (antes sumia em lives, onde quase sempre há fala)
+    expect(musicAlone - musicWithVoice).toBeLessThan(14)
     expect(band(1000, 5.0, 5.3)).toBeGreaterThan(band(1000, 6.5, 7.5) + 20)
     expect(band(220, 6.6, 7.4)).toBeGreaterThan(-60) // música em loop até o fim
   })

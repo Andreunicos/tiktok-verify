@@ -361,20 +361,21 @@ export class AutoPilot extends EventEmitter {
       else
         await this.step(run, 'trilha', signal, async () => {
           const parts: string[] = []
+          let musicFailed = false
           for (const c of clips) {
             const extras: AudioExtras = {}
-            if (o.music !== 'nenhuma' && d.pickMusic) {
+            if (o.music !== 'nenhuma' && d.pickMusic && !musicFailed) {
               try {
                 const m = await d.pickMusic(o.music, signal)
                 if (m) {
-                  extras.music = { file: m.file, volume: 0.22, duck: true, attribution: m.attribution }
+                  extras.music = { file: m.file, volume: 0.3, duck: true, attribution: m.attribution }
                   if (m.attribution) c.description = [c.description, `🎵 ${m.attribution}`].filter(Boolean).join('\n')
                   if (!parts.includes(m.title)) parts.push(m.title)
                 }
               } catch (err) {
                 if (signal.aborted) throw new Cancelled()
                 run.notes.push(`Sem música de fundo: ${(err as Error).message}`)
-                break
+                musicFailed = true // segue sem música, mas mantém os efeitos nos outros cortes
               }
             }
             if (o.effects && d.pickEffect) {

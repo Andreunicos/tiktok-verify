@@ -82,3 +82,19 @@ Nenhum outro bug aberto conhecido. Corrigidos durante o desenvolvimento (achados
 | GitHub Actions — publicação | v0.3.3 publicada com `BigLoop-AutoClips-Setup-0.3.3.exe`, `.blockmap` e `latest.yml`; `releases/latest/download/latest.yml` responde `version: 0.3.3` |
 | E2E do modo automático (Electron, Xvfb) | 2 cliques (escolher vídeo → Gerar cortes) → 3 cortes 1080×1920 com áudio, capas e `textos para postar.txt`; com whisper simulado a transcrição entra e as legendas são gravadas; OBS simulado ao parar de gravar dispara a geração sozinha (`origin: obs`, marcador preservado) |
 | E2E de sons e TikTok (Openverse e TikTok simulados) | efeitos gerados aparecem; busca “calm” → adicionar à biblioteca (clima Calma); 2 cliques com música Calma + efeito → etapa “Colocando música e efeitos” cita a faixa; Configurações → Contas: salvar app, Conectar (retorno local) → “Conectado como André Teste”; corte → Rascunho (arquivo inteiro recebido) → Postar: botão bloqueado até escolher privacidade; post SELF_ONLY com interações desligadas |
+
+## Cortes saindo sem música (2026-10-11)
+
+- **Bug relatado:** depois do teste no Windows, os cortes saíram sem música de fundo.
+- **Causa:** a música dependia 100% de baixar faixas do Openverse na hora. Se a busca ou o download falhasse
+  (sem internet, limite de buscas, servidor fora, poucas faixas CC0 para o clima), o corte saía sem música — só
+  com um aviso nas notas. Além disso, o `break` no erro fazia os cortes seguintes perderem também o efeito de entrada.
+- **Correção:**
+  - Trilhas geradas pelo próprio app (`src/shared/music.ts`), uma por clima (Pulso Animado, Manhã Calma,
+    Horizonte Épico, Tarde Lo-fi, Passinho Engraçado): síntese local, loop perfeito, CC0, funcionam sem internet.
+  - Ordem: músicas baixadas/importadas do clima → tenta o Openverse uma vez por sessão (limite de 45 s) → trilha gerada.
+  - Erro de música não derruba mais os efeitos dos outros cortes.
+  - Ducking mais suave (ratio 10 → 4, limiar 0,01) e volume da música 0,22 → 0,3, para a trilha continuar audível
+    embaixo de voz alta. Medido no teste: música cai ~7,8 dB quando há voz (antes ~7 dB com voz baixa, mais com voz alta).
+- **Testes:** `tests/music.test.ts` (som em toda a trilha, pico, loop sem estalo, WAV válido); biblioteca gera a trilha
+  uma vez; exportação confirma que a música abaixa 6–14 dB sob a voz; E2E com Openverse respondendo 503 usa “Tarde Lo-fi”.

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, rm, stat } from 'node:fs/promises'
+import { copyFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join, normalize, sep } from 'node:path'
+import { encodeWav, generatedMusicTitle, renderMusic } from '../shared/music'
 import type { Mood, SoundItem, SoundKind } from '../shared/types'
 import { readJson, writeJsonAtomic } from './jsonFile'
 import { runSimple } from './media/export'
@@ -113,6 +114,35 @@ export class SoundLibrary {
       created++
     }
     return created
+  }
+
+  /**
+   * Garante a trilha gerada pelo app para um clima (funciona sem internet). Retorna o item
+   * existente ou cria o WAV na hora.
+   */
+  async ensureGeneratedMusic(mood: Mood): Promise<SoundItem> {
+    const file = join(this.filesDir, `musica-gerada-${mood}.wav`)
+    const existing = this.items.find((i) => i.file === file)
+    if (existing) return existing
+    await mkdir(this.filesDir, { recursive: true })
+    const m = renderMusic(mood)
+    const tmp = `${file}.part`
+    await writeFile(tmp, encodeWav(m))
+    await rename(tmp, file)
+    return this.add({
+      kind: 'musica',
+      title: generatedMusicTitle(mood),
+      file,
+      durationSec: Math.round(m.durationSec * 1000) / 1000,
+      mood,
+      tags: ['gerada', 'loop'],
+      license: 'Gerado pelo app (CC0)',
+      licenseUrl: 'https://creativecommons.org/publicdomain/zero/1.0/',
+      creator: 'BigLoop AutoClips',
+      sourceUrl: null,
+      attribution: null,
+      origin: 'gerado'
+    })
   }
 
   /** Copia um arquivo do usuário para a biblioteca. */
