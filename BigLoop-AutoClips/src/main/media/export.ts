@@ -158,10 +158,12 @@ export async function startExport(req: CutRequest, opts: ExportOptionsRuntime): 
   const burn = (o.subtitles === 'burn' || o.subtitles === 'both') && o.format === 'mp4'
   const clipCues = req.cues && o.subtitles !== 'none' ? mapCuesToClip(req.cues, req.ranges, o.speed) : []
   let assName: string | undefined
-  if (burn && clipCues.length > 0) {
+  const title = o.format === 'mp4' ? req.visual?.title?.trim() : undefined
+  if ((burn && clipCues.length > 0) || title) {
     assName = 'legendas.ass'
     const [w, h] = outputSize(o.aspect, req.source.width, req.source.height)
-    await writeFile(join(workDir, assName), buildAss(clipCues, o.subtitleStyle, w, h), 'utf8')
+    const cuesToBurn = burn ? clipCues : []
+    await writeFile(join(workDir, assName), buildAss(cuesToBurn, o.subtitleStyle, w, h, { title, keywords: req.visual?.keywords }), 'utf8')
   }
 
   const ext = extname(outputPath)

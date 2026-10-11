@@ -183,6 +183,7 @@ export function Create(p: Props) {
             <div className="choices-group">
               <span className="group-label">Enquadramento</span>
               <div className="choices">
+                <Choice value="auto" current={opts.framing} onPick={(framing) => set({ framing })} title="Inteligente" sub="segue a pessoa" />
                 <Choice value="blur" current={opts.framing} onPick={(framing) => set({ framing })} title="Vídeo inteiro" sub="fundo desfocado" />
                 <Choice value="crop" current={opts.framing} onPick={(framing) => set({ framing })} title="Preencher a tela" sub="corta as laterais" />
               </div>
@@ -207,7 +208,11 @@ export function Create(p: Props) {
             </label>
             <label className="switch">
               <input type="checkbox" checked={opts.effects} onChange={(e) => set({ effects: e.target.checked })} />
-              <span>Efeito sonoro de entrada</span>
+              <span>Efeitos sonoros nos momentos certos</span>
+            </label>
+            <label className="switch">
+              <input type="checkbox" checked={opts.smartEdit !== false} onChange={(e) => set({ smartEdit: e.target.checked })} />
+              <span>Edição turbinada (gancho, zoom, título e barra)</span>
             </label>
           </div>
           <button className="cta" onClick={generate}>

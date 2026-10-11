@@ -224,7 +224,22 @@ const escapeAss = (t: string) => t.replace(/\\/g, '\\\\').replace(/\{/g, '(').re
  * palavra com a palavra atual colorida (estilo TikTok).
  * O tamanho da fonte é relativo a uma tela de 1080 de largura.
  */
-export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, height: number): string {
+export interface AssExtras {
+  /** Título grande no topo nos primeiros segundos (caixa branca, texto preto). */
+  title?: string
+  titleSec?: number
+  /** Palavras com destaque permanente (amarelo e um pouco maiores). */
+  keywords?: string[]
+}
+
+const keyOf = (w: string) =>
+  w
+    .toLocaleLowerCase('pt-BR')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '')
+
+export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, height: number, extras: AssExtras = {}): string {
   const scale = Math.min(width, height) / 1080
   const fontSize = Math.max(12, Math.round(style.fontSize * scale))
   const alignment = style.position === 'top' ? 8 : style.position === 'middle' ? 5 : 2
@@ -241,6 +256,7 @@ export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, heigh
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
     `Style: Default,${style.font},${fontSize},${assColor(style.textColor)},${assColor(style.highlightColor)},${assColor(style.outlineColor)},&H80000000,-1,0,0,0,100,100,0,0,1,${Math.round(style.outline * scale)},0,${alignment},${marginH},${marginH},${marginV},1`,
+    `Style: Title,${style.font},${Math.round(fontSize * 0.9)},&H00111111,&H00111111,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,${Math.max(6, Math.round(14 * scale))},0,8,${marginH},${marginH},${Math.round(height * 0.09)},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'
@@ -249,6 +265,13 @@ export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, heigh
   const blocks = splitCuesForDisplay(cues, style.maxCharsPerLine, style.maxLines)
   const events: string[] = []
   const hl = assColor(style.highlightColor)
+  // Palavra-chave em verde (a palavra falada já usa a cor de destaque, normalmente amarela)
+  const keyColor = assColor('#4DFF88')
+  const keywords = new Set((extras.keywords ?? []).map(keyOf).filter(Boolean))
+  if (extras.title?.trim()) {
+    const lines = wrapText(extras.title.trim(), Math.max(14, Math.round(style.maxCharsPerLine * 1.1))).slice(0, 3)
+    events.push(`Dialogue: 1,${assTime(0)},${assTime(extras.titleSec ?? 3.2)},Title,,0,0,0,,{\\fad(150,250)}${lines.map((l) => escapeAss(transform(l))).join('\\N')}`)
+  }
   for (const cue of blocks) {
     const display = (words: string[], active: number) => {
       const lines = wrapText(words.join(' '), style.maxCharsPerLine)
@@ -257,7 +280,13 @@ export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, heigh
         line
           .split(' ')
           .map((w) => {
-            const out = idx === active ? `{\\c${hl}}${escapeAss(transform(w))}{\\r}` : escapeAss(transform(w))
+            const isKey = keywords.size > 0 && keywords.has(keyOf(w))
+            const out =
+              idx === active
+                ? `{\\c${hl}${isKey ? '\\fscx115\\fscy115' : ''}}${escapeAss(transform(w))}{\\r}`
+                : isKey
+                  ? `{\\c${keyColor}\\fscx115\\fscy115}${escapeAss(transform(w))}{\\r}`
+                  : escapeAss(transform(w))
             idx++
             return out
           })

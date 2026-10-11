@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, ObsStatus, ToolStatus, WatchStatus } from '@shared/types'
 import { SetupCard } from '../components/SetupCard'
+import { AiSettings } from '../components/AiSettings'
 import { TikTokAccount } from '../components/TikTokAccount'
 import { Field, Toggle, useToast } from '../lib/ui'
 
@@ -22,7 +23,7 @@ const SECTIONS = [
   ['transcricao', 'Transcrição'],
   ['monitoramento', 'Monitoramento'],
   ['obs', 'OBS'],
-  ['ia', 'IA (opcional)'],
+  ['ia', 'IA'],
   ['diagnostico', 'Diagnóstico'],
   ['sobre', 'Sobre e atualizações']
 ] as const
@@ -35,7 +36,6 @@ export default function SettingsView(p: Props) {
   const [ffmpeg, setFfmpeg] = useState(s.ffmpegPath)
   const [ffprobe, setFfprobe] = useState(s.ffprobePath)
   const [obsPass, setObsPass] = useState('')
-  const [aiKey, setAiKey] = useState('')
   const [obsHost, setObsHost] = useState(s.obsHost)
   const [obsPort, setObsPort] = useState(String(s.obsPort))
   const [shortcut, setShortcut] = useState(s.markerShortcut)
@@ -297,36 +297,8 @@ export default function SettingsView(p: Props) {
         </section>
 
         <section className="card" ref={sec('ia')}>
-          <h2>IA (opcional, paga)</h2>
-          <p className="muted small">
-            Usa o Claude, da Anthropic, para escrever títulos, descrições e hashtags e para traduzir legendas. É enviado <strong>só o texto</strong> da
-            transcrição do trecho — nunca o vídeo ou o áudio. Cada uso gera cobrança na <strong>sua</strong> conta da Anthropic. Sem isso, o app usa
-            sugestões locais grátis.
-          </p>
-          <Toggle checked={s.aiEnabled} onChange={(v) => p.onSettings({ aiEnabled: v })} label="Ativar IA" />
-          <Field label={`Chave da API Anthropic ${s.aiKeyEnc ? '(salva)' : ''}`}>
-            <div className="row">
-              <input type="password" value={aiKey} onChange={(e) => setAiKey(e.target.value)} placeholder={s.aiKeyEnc ? '••••••••' : 'sk-ant-…'} autoComplete="off" />
-              <button
-                disabled={!aiKey}
-                onClick={async () => {
-                  const res = await api.setSecret('ai', aiKey.trim())
-                  setAiKey('')
-                  toast(res.ok ? 'Chave salva com criptografia do Windows.' : res.error, res.ok ? 'ok' : 'erro')
-                }}
-              >
-                Salvar chave
-              </button>
-              {s.aiKeyEnc && (
-                <button className="ghost" onClick={async () => (await api.setSecret('ai', ''), toast('Chave apagada.', 'info'))}>
-                  Apagar
-                </button>
-              )}
-            </div>
-          </Field>
-          <Field label="Modelo" hint="Em branco usa o padrão (claude-opus-5-5).">
-            <input value={s.aiModel} onChange={(e) => p.onSettings({ aiModel: e.target.value.trim() })} placeholder="claude-opus-5-5" />
-          </Field>
+          <h2>IA (grátis ou paga)</h2>
+          <AiSettings settings={s} onSettings={p.onSettings} />
         </section>
 
         <section className="card" ref={sec('diagnostico')}>

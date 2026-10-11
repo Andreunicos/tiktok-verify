@@ -320,9 +320,10 @@ h2.plain { text-transform: none; letter-spacing: 0; color: var(--text); font-siz
 .run-progress { display: grid; gap: 8px; }
 .run-progress .progress { height: 10px; border-radius: 5px; }
 .success { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; border-color: var(--ok); background: linear-gradient(160deg, rgba(62, 207, 142, 0.12), transparent); }
+.success > .grow { flex: 1 1 260px; min-width: 260px; }
 .success p { margin: 4px 0 0; }
 .big-emoji { font-size: 44px; }
-.success-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.success-actions { display: flex; gap: 8px; flex-wrap: wrap; flex: 1 1 100%; }
 .failure { border-color: var(--err); display: grid; gap: 8px; }
 .notes { display: grid; gap: 6px; }
 .note { margin: 0; padding: 8px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); font-size: 13px; }

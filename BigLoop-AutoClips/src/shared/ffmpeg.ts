@@ -1,4 +1,5 @@
 import { outputSize } from './presets'
+import { trackExpr, zoomExpr } from './smart'
 import type { AudioStreamInfo, CutRequest, ExportOptions, MediaMetadata, Quality, VideoEncoder, VideoStreamInfo } from './types'
 
 export const OUTPUT_EXT: Record<ExportOptions['format'], string> = { mp4: 'mp4', mp3: 'mp3', wav: 'wav', gif: 'gif' }
@@ -64,12 +65,14 @@ export function videoCodecArgs(encoder: VideoEncoder, quality: Quality, kbps: nu
 }
 
 /** Filtros de vídeo que ajustam a proporção (recorte, barras ou fundo desfocado). Retorna subgrafo. */
-export function aspectGraph(inLabel: string, outLabel: string, o: ExportOptions, srcW: number, srcH: number): string {
+export function aspectGraph(inLabel: string, outLabel: string, o: ExportOptions, srcW: number, srcH: number, track?: { t: number; x: number }[]): string {
   if (o.aspect === 'original') return `${inLabel}scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1${outLabel}`
   const [W, H] = outputSize(o.aspect, srcW, srcH)
-  const cx = Math.min(1, Math.max(0, o.cropX)).toFixed(3)
+  // Recorte que acompanha a pessoa: posição muda ao longo do tempo (expressão avaliada a cada quadro)
   const cy = Math.min(1, Math.max(0, o.cropY)).toFixed(3)
-  const cover = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-${W})*${cx}:(ih-${H})*${cy}`
+  const cx = Math.min(1, Math.max(0, o.cropX)).toFixed(3)
+  const xPos = track && track.length > 0 ? `'(iw-${W})*(${trackExpr(track)})'` : `(iw-${W})*${cx}`
+  const cover = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:${xPos}:(ih-${H})*${cy}`
   if (o.fit === 'crop') return `${inLabel}${cover},setsar=1${outLabel}`
   if (o.fit === 'pad')
     return `${inLabel}scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1${outLabel}`
@@ -159,18 +162,32 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
     if (o.speed !== 1) pre.push(`setpts=PTS/${+o.speed.toFixed(4)}`)
     const aspectIn = pre.length ? '[vpre]' : vLabel
     if (pre.length) graph.push(`${vLabel}${pre.join(',')}[vpre]`)
-    graph.push(aspectGraph(aspectIn, '[vasp]', o, req.source.width, req.source.height))
+    const visual = o.format === 'mp4' ? req.visual : undefined
+    graph.push(aspectGraph(aspectIn, '[vasp]', o, req.source.width, req.source.height, o.fit === 'crop' ? visual?.track : undefined))
     const post: string[] = []
+    let vNow = '[vasp]'
+    const [OW, OH] = outputSize(o.aspect, req.source.width, req.source.height)
+    const fps = Math.min(60, Math.max(10, Math.round(req.source.fps ?? 30)))
+    if (visual?.zooms?.length && o.aspect !== 'original') {
+      // Punch-in: zoom no centro em degrau (sem animação = sem tremedeira)
+      graph.push(`${vNow}fps=${fps},zoompan=z='${zoomExpr(visual.zooms)}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${OW}x${OH}:fps=${fps}[vzoom]`)
+      vNow = '[vzoom]'
+    }
+    if (visual?.progressBar && o.aspect !== 'original') {
+      const barH = Math.max(6, Math.round(OH * 0.0075))
+      graph.push(`color=c=white@0.9:s=${OW}x${barH}:r=${fps}:d=${n3(duration)},format=rgba[pbar]`, `${vNow}[pbar]overlay=x='-w+w*t/${n3(duration)}':y=H-${barH}:eof_action=pass[vbar]`)
+      vNow = '[vbar]'
+    }
     if (o.fadeInSec > 0) post.push(`fade=t=in:st=0:d=${n3(o.fadeInSec)}`)
     if (o.fadeOutSec > 0) post.push(`fade=t=out:st=${n3(Math.max(0, duration - o.fadeOutSec))}:d=${n3(o.fadeOutSec)}`)
     if (assFileName && o.format === 'mp4') post.push(`ass=${assFileName}`)
     if (o.format === 'gif') {
       const gifW = o.aspect === 'original' ? 'min(480\\,iw)' : '480'
       post.push('fps=12', `scale=${gifW}:-2:flags=lanczos`)
-      graph.push(`[vasp]${post.join(',')},split[g1][g2]`, '[g1]palettegen=stats_mode=diff[pal]', '[g2][pal]paletteuse=dither=bayer:bayer_scale=4[vout]')
+      graph.push(`${vNow}${post.join(',')},split[g1][g2]`, '[g1]palettegen=stats_mode=diff[pal]', '[g2][pal]paletteuse=dither=bayer:bayer_scale=4[vout]')
     } else {
       post.push('format=yuv420p')
-      graph.push(`[vasp]${post.join(',')}[vout]`)
+      graph.push(`${vNow}${post.join(',')}[vout]`)
     }
   }
 

@@ -10,14 +10,14 @@ import type { Cue } from '../shared/types'
  */
 export const DEFAULT_AI_MODEL = 'claude-opus-5-5'
 
-const SocialSchema = z.object({
+export const SocialSchema = z.object({
   title: z.string(),
   description: z.string(),
   hashtags: z.array(z.string())
 })
 export type SocialCopy = z.infer<typeof SocialSchema>
 
-const TranslationSchema = z.object({ lines: z.array(z.object({ id: z.string(), text: z.string() })) })
+export const TranslationSchema = z.object({ lines: z.array(z.object({ id: z.string(), text: z.string() })) })
 
 export class AiError extends Error {}
 
@@ -26,7 +26,7 @@ function client(apiKey: string, fetchImpl?: typeof fetch): Anthropic {
   return new Anthropic({ apiKey, maxRetries: 2, timeout: 120_000, ...(fetchImpl ? { fetch: fetchImpl } : {}) })
 }
 
-async function ask<T>(
+export async function ask<T>(
   apiKey: string,
   model: string,
   system: string,
@@ -68,29 +68,40 @@ async function ask<T>(
   }
 }
 
+/** Pedido de JSON validado: a mesma assinatura serve para o Claude e para a IA grátis. */
+export type AskJson = <T>(system: string, user: string, schema: z.ZodType<T>) => Promise<T>
+
+export const claudeAsk =
+  (apiKey: string, model: string, fetchImpl?: typeof fetch): AskJson =>
+  (system, user, schema) =>
+    ask(apiKey, model, system, user, schema, fetchImpl)
+
+export const SOCIAL_SYSTEM =
+  'Você escreve textos para vídeos curtos em redes sociais, em português do Brasil. Seja fiel ao que é dito na transcrição; não invente fatos.'
+export const socialPrompt = (transcript: string, platform: string) =>
+  `Plataforma: ${platform}\n\nTranscrição do corte:\n"""\n${transcript}\n"""\n\nCrie um título curto e chamativo (até 70 caracteres), uma descrição de 1 a 3 frases e de 3 a 8 hashtags relevantes (com #, sem espaços). Campos: title, description, hashtags.`
+
+export function socialCopyWith(askJson: AskJson, transcript: string, platform: string): Promise<SocialCopy> {
+  return askJson(SOCIAL_SYSTEM, socialPrompt(transcript, platform), SocialSchema)
+}
+
 export function generateSocialCopy(apiKey: string, model: string, transcript: string, platform: string, fetchImpl?: typeof fetch): Promise<SocialCopy> {
-  return ask(
-    apiKey,
-    model,
-    'Você escreve textos para vídeos curtos em redes sociais, em português do Brasil. Seja fiel ao que é dito na transcrição; não invente fatos.',
-    `Plataforma: ${platform}\n\nTranscrição do corte:\n"""\n${transcript}\n"""\n\nCrie um título curto e chamativo (até 70 caracteres), uma descrição de 1 a 3 frases e de 3 a 8 hashtags relevantes (com #, sem espaços).`,
-    SocialSchema,
-    fetchImpl
-  )
+  return socialCopyWith(claudeAsk(apiKey, model, fetchImpl), transcript, platform)
 }
 
 /** Traduz legendas mantendo os ids (os tempos ficam iguais). */
-export async function translateCues(apiKey: string, model: string, cues: Cue[], targetLanguage: string, fetchImpl?: typeof fetch): Promise<Cue[]> {
+export function translateCues(apiKey: string, model: string, cues: Cue[], targetLanguage: string, fetchImpl?: typeof fetch): Promise<Cue[]> {
+  return translateCuesWith(claudeAsk(apiKey, model, fetchImpl), cues, targetLanguage)
+}
+
+export async function translateCuesWith(askJson: AskJson, cues: Cue[], targetLanguage: string): Promise<Cue[]> {
   const out: Cue[] = []
   for (let i = 0; i < cues.length; i += 150) {
     const batch = cues.slice(i, i + 150)
-    const res = await ask(
-      apiKey,
-      model,
+    const res = await askJson(
       'Você traduz legendas de vídeo. Mantenha o tom falado, frases curtas e o mesmo id em cada linha.',
-      `Traduza para ${targetLanguage}. Responda com todas as linhas, na mesma ordem.\n\n${JSON.stringify(batch.map((c) => ({ id: c.id, text: c.text })))}`,
-      TranslationSchema,
-      fetchImpl
+      `Traduza para ${targetLanguage}. Responda com todas as linhas, na mesma ordem, no formato {"lines":[{"id":"…","text":"…"}]}.\n\n${JSON.stringify(batch.map((c) => ({ id: c.id, text: c.text })))}`,
+      TranslationSchema
     )
     const byId = new Map(res.lines.map((l) => [l.id, l.text]))
     // Palavras perdem o tempo exato após tradução: mantém só o tempo da frase.

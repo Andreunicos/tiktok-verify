@@ -25,6 +25,7 @@ export const IPC = {
   exportInterchange: 'export:interchange',
   aiSocial: 'ai:social',
   aiTranslate: 'ai:translate',
+  aiTest: 'ai:test',
   autoStart: 'auto:start',
   autoList: 'auto:list',
   autoCancel: 'auto:cancel',

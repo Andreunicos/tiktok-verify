@@ -79,8 +79,8 @@ export function SuggestionsPanel(p: Props) {
             </ul>
             <div className="features">
               {(Object.keys(s.features) as (keyof SuggestionFeatures)[]).map((k) => (
-                <span key={k} title={`${FEATURE_LABELS[k]}: ${Math.round(s.features[k] * 100)}%`}>
-                  <i style={{ height: `${Math.max(2, s.features[k] * 18)}px` }} />
+                <span key={k} title={`${FEATURE_LABELS[k]}: ${Math.round((s.features[k] ?? 0) * 100)}%`}>
+                  <i style={{ height: `${Math.max(2, (s.features[k] ?? 0) * 18)}px` }} />
                   <small>{FEATURE_LABELS[k].slice(0, 6)}</small>
                 </span>
               ))}

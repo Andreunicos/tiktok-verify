@@ -23,14 +23,19 @@ import { buildEdl, buildFcpXml } from '../shared/interchange'
 import { IPC } from '../shared/ipc'
 import { formatSrt, formatVtt, parseSubtitles } from '../shared/subtitles'
 import { learnWeights, suggestClips } from '../shared/suggest'
-import type { AppSettings, AutoRun, ClipPost, CutRequest, TikTokPostRequest, TikTokStatus, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
+import type { AppSettings, SecretKind, AutoRun, ClipPost, CutRequest, TikTokPostRequest, TikTokStatus, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
 import { autoUpdater } from 'electron-updater'
 import { AutoPilot } from './autopilot'
 import { downloadToLibrary, MOOD_QUERY, searchOpenverse } from './openverse'
+import { MUSIC_VARIANTS } from '../shared/music'
+import { z } from 'zod'
+import { FREE_PROVIDERS, FreeAi, type FreeProviderId } from './freeai'
+import { planClips } from './brain'
+import { trackPerson } from './media/track'
 import { SoundLibrary } from './sounds'
 import { buildAuthUrl, createPkce, exchangeCode, TIKTOK, TikTokSession, waitForAuthCode, type TikTokAppConfig, type TikTokTokens } from './tiktok'
 import { installFfmpeg, installWhisper } from './installer'
-import { AiError, generateSocialCopy, translateCues } from './ai'
+import { AiError, claudeAsk, socialCopyWith, translateCuesWith, type AskJson } from './ai'
 import { redact } from './diagnostics'
 import { readJson, writeJsonAtomic } from './jsonFile'
 import { initLogger, log, logPath } from './logger'
@@ -66,6 +71,8 @@ let autopilot: AutoPilot
 let sounds: SoundLibrary
 /** Climas em que já tentamos baixar música do Openverse nesta sessão. */
 const openverseTried = new Set<string>()
+/** Sorteio inicial para a ordem das músicas mudar entre vídeos. */
+const musicOffset = Math.floor(Math.random() * 1000)
 let tiktok: TikTokSession
 const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
 const tasks = new Map<string, AbortController>()
@@ -451,12 +458,20 @@ function setupAutopilot(): void {
             onProgress: (_st, r) => onProgress(r)
           })
       },
-      aiSocial: async (text, platform) => {
-        const s = settings.get()
-        if (!s.aiEnabled || !s.aiKeyEnc) return null
-        return generateSocialCopy(decryptSecret(s.aiKeyEnc), s.aiModel, text, platform)
+      aiPlan: async (platform, count, candidates) => {
+        const ai = currentAi()
+        if (!ai) return null
+        log('info', 'IA: escolhendo os melhores trechos', { candidatos: candidates.length })
+        const clips = await planClips(ai.ask, platform, count, candidates)
+        return { via: ai.via(), clips }
       },
-      pickMusic: async (mood, signal) => {
+      track: (path, span, w, h, cropFrac, signal) => trackPerson(requireFfmpeg(), path, span, w, h, cropFrac, signal),
+      aiSocial: async (text, platform) => {
+        const ai = currentAi()
+        if (!ai) return null
+        return socialCopyWith(ai.ask, text, platform)
+      },
+      pickMusic: async (mood, signal, index) => {
         // 1) Músicas baixadas/importadas desse clima; 2) tenta o Openverse uma vez por sessão;
         // 3) sempre sobra a trilha gerada pelo app (funciona sem internet).
         const own = () => sounds.list('musica').filter((i) => i.mood === mood && i.origin !== 'gerado')
@@ -479,7 +494,9 @@ function setupAutopilot(): void {
         }
         if (signal.aborted) return null
         const pool = own()
-        const item = pool.length ? pool[Math.floor(Math.random() * pool.length)] : await sounds.ensureGeneratedMusic(mood)
+        // Cada corte do mesmo vídeo pega uma música diferente (gira pela lista a partir de um sorteio)
+        const k = (index ?? 0) + musicOffset
+        const item = pool.length ? pool[k % pool.length] : await sounds.ensureGeneratedMusic(mood, k % MUSIC_VARIANTS)
         return { file: item.file, title: item.title, attribution: item.attribution }
       },
       pickEffect: (key) => sounds.list('efeito').find((i) => i.origin === 'gerado' && i.tags.includes(key))?.file ?? null,
@@ -533,6 +550,32 @@ function setupAutopilot(): void {
 }
 
 // ───────────── TikTok ─────────────
+
+/** IA ativa agora: grátis (Groq/Cerebras/OpenRouter), Claude ou nenhuma. */
+function currentAi(): { ask: AskJson; via: () => string } | null {
+  const s = settings.get()
+  const keys: Partial<Record<FreeProviderId, string>> = {
+    groq: decryptSecret(s.groqKeyEnc),
+    cerebras: decryptSecret(s.cerebrasKeyEnc),
+    openrouter: decryptSecret(s.openrouterKeyEnc)
+  }
+  const free = new FreeAi({ keys, baseOverride: process.env.BIGLOOP_FREEAI_BASE || undefined, log })
+  const claude = s.aiKeyEnc ? claudeAsk(decryptSecret(s.aiKeyEnc), s.aiModel) : null
+  if (s.aiProvider === 'gratis' && free.configured().length > 0) {
+    let via = ''
+    return {
+      ask: async (system, user, schema) => {
+        const r = await free.json(system, user, schema)
+        via = `${FREE_PROVIDERS[r.provider].label} (${r.model})`
+        return r.data
+      },
+      via: () => via
+    }
+  }
+  // Quem já usava o Claude antes da IA grátis continua com ele
+  if ((s.aiProvider === 'claude' || (s.aiProvider === 'gratis' && s.aiEnabled)) && claude) return { ask: claude, via: () => 'Claude' }
+  return null
+}
 
 function encryptSecret(value: string): string {
   if (!value) return ''
@@ -921,8 +964,8 @@ function registerIpc(): void {
 
   handle(IPC.aiSocial, async (_e, projectId: string, segmentId: string, platform: string) => {
     try {
-      const s = settings.get()
-      if (!s.aiEnabled) throw new AiError('A IA está desligada. Ative em Configurações → IA.')
+      const ai = currentAi()
+      if (!ai) throw new AiError('A IA está desligada. Cole uma chave grátis em Configurações → IA.')
       const p = requireProject(projectId)
       const seg = p.segments.find((x) => x.id === segmentId)
       if (!seg) throw new Error('Trecho não encontrado.')
@@ -932,18 +975,29 @@ function registerIpc(): void {
         .join(' ')
       if (!text.trim()) throw new Error('O trecho não tem transcrição. Transcreva antes.')
       log('info', 'IA: gerando texto para redes', { chars: text.length })
-      return ok(await generateSocialCopy(decryptSecret(s.aiKeyEnc), s.aiModel, text, platform))
+      return ok(await socialCopyWith(ai.ask, text, platform))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.aiTest, async () => {
+    try {
+      const ai = currentAi()
+      if (!ai) throw new AiError('Nenhuma IA configurada. Cole uma chave grátis do Groq (ou Cerebras/OpenRouter).')
+      const res = await ai.ask('Você é um teste de conexão.', 'Responda {"ok": true}', z.object({ ok: z.boolean() }))
+      if (!res.ok) throw new AiError('A IA respondeu, mas de um jeito inesperado.')
+      return ok(ai.via())
     } catch (err) {
       return fail(err)
     }
   })
   handle(IPC.aiTranslate, async (_e, projectId: string, language: string) => {
     try {
-      const s = settings.get()
-      if (!s.aiEnabled) throw new AiError('A IA está desligada. Ative em Configurações → IA.')
+      const ai = currentAi()
+      if (!ai) throw new AiError('A IA está desligada. Cole uma chave grátis em Configurações → IA.')
       const p = requireProject(projectId)
       if (!p.transcript?.cues.length) throw new Error('Não há transcrição para traduzir.')
-      const cues = await translateCues(decryptSecret(s.aiKeyEnc), s.aiModel, p.transcript.cues, language)
+      const cues = await translateCuesWith(ai.ask, p.transcript.cues, language)
       const transcript = { language, engine: `${p.transcript.engine} + tradução`, createdAt: Date.now(), cues }
       projects.update(projectId, { transcript })
       return ok(transcript)
@@ -1092,7 +1146,7 @@ function registerIpc(): void {
   handle(IPC.saveSettings, async (_e, patch: Partial<AppSettings>) => {
     const before = settings.get()
     // Segredos só pelo canal próprio
-    const { obsPasswordEnc: _a, aiKeyEnc: _b, tiktokClientSecretEnc: _c, tiktokTokensEnc: _d, ...safe } = patch
+    const { obsPasswordEnc: _a, aiKeyEnc: _b, tiktokClientSecretEnc: _c, tiktokTokensEnc: _d, groqKeyEnc: _g1, cerebrasKeyEnc: _g2, openrouterKeyEnc: _g3, ...safe } = patch
     const after = settings.update(safe)
     if (after.concurrency !== before.concurrency) queue.setConcurrency(after.concurrency)
     if (after.obsEnabled !== before.obsEnabled || after.obsHost !== before.obsHost || after.obsPort !== before.obsPort) {
@@ -1106,11 +1160,13 @@ function registerIpc(): void {
     if (after.autoUpdate && !before.autoUpdate) void updates.check()
     return after
   })
-  handle(IPC.setSecret, (_e, kind: 'obs' | 'ai', value: string) => {
+  handle(IPC.setSecret, (_e, kind: SecretKind, value: string) => {
     try {
       if (value && !safeStorage.isEncryptionAvailable()) throw new Error('O sistema não oferece armazenamento seguro; o segredo não foi salvo.')
       const enc = value ? safeStorage.encryptString(value).toString('base64') : ''
-      settings.update(kind === 'obs' ? { obsPasswordEnc: enc } : { aiKeyEnc: enc })
+      const field = ({ obs: 'obsPasswordEnc', ai: 'aiKeyEnc', groq: 'groqKeyEnc', cerebras: 'cerebrasKeyEnc', openrouter: 'openrouterKeyEnc' } as const)[kind]
+      if (!field) throw new Error('Tipo de segredo desconhecido.')
+      settings.update({ [field]: enc })
       if (kind === 'obs' && settings.get().obsEnabled) {
         obs.stop()
         obs.start()
@@ -1202,6 +1258,11 @@ app.whenReady().then(async () => {
   const lp = initLogger(join(app.getPath('userData'), 'logs'))
   settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), defaultSettings({ outputDir: defaultOutputDir() }))
   projects = new ProjectStore(join(app.getPath('userData'), 'projetos'))
+  // Uma vez só: quem usava "Vídeo inteiro" (o padrão antigo) passa para o enquadramento inteligente
+  if (!settings.get().smartDefaultsV1) {
+    const a = settings.get().auto
+    settings.update({ auto: { ...a, framing: a.framing === 'blur' ? 'auto' : a.framing, smartEdit: true }, smartDefaultsV1: true })
+  }
   log('info', `BigLoop AutoClips ${app.getVersion()} iniciado`, { log: lp })
   handleMediaProtocol()
   setupQueue()

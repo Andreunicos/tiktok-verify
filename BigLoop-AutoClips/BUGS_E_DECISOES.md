@@ -98,3 +98,38 @@ Nenhum outro bug aberto conhecido. Corrigidos durante o desenvolvimento (achados
     embaixo de voz alta. Medido no teste: música cai ~7,8 dB quando há voz (antes ~7 dB com voz baixa, mais com voz alta).
 - **Testes:** `tests/music.test.ts` (som em toda a trilha, pico, loop sem estalo, WAV válido); biblioteca gera a trilha
   uma vez; exportação confirma que a música abaixa 6–14 dB sob a voz; E2E com Openverse respondendo 503 usa “Tarde Lo-fi”.
+
+## Edição turbinada e IA grátis (2026-10-11)
+
+Pedido: deixar o app mais inteligente, com mais sons, e IA open source ilimitada sem pesar no PC.
+
+- **IA grátis na nuvem** (`src/main/freeai.ts`): Groq → Cerebras → OpenRouter, todos no formato OpenAI. O app
+  lista os modelos da conta e escolhe o melhor de texto (GPT-OSS 120B, Llama 3.3 70B, Qwen…), pede JSON e, se um
+  serviço falhar (limite, chave inválida, resposta quebrada), passa para o próximo. Não existe IA web realmente
+  ilimitada: os planos grátis têm limites por minuto/dia, mas o app faz 1 pedido por vídeo no modo automático.
+  Só texto é enviado. Política de Privacidade e Termos do site atualizados. Decisão: a chave é do usuário
+  (nunca embutida no app, que é público).
+- **Cérebro** (`src/main/brain.ts`): as regras locais acham até 15 candidatos; a IA dá nota, título, descrição,
+  hashtags, frase de gancho e palavras-chave. Nota final = 60% IA + 40% regras. IA fora do ar → só regras + aviso.
+- **Risadas e gritos** (`detectReactions` em `src/shared/analysis.ts`): sem IA, pelo áudio. Risada = volume
+  acima do normal que pulsa em ritmo de 3–7 Hz; grito = alto, contínuo e áspero (cruzamentos por zero). Viraram a
+  característica “Risada/grito” na nota dos trechos. Análises antigas são refeitas uma vez.
+- **Frases inteiras** (`snapToSentences`): início/fim puxados para o começo/fim da frase (até 2,5 s antes e 3,5 s depois).
+- **Gancho no começo** (`withTeaser`): se a IA aponta uma frase forte (1,2–5 s) que acontece depois de 4 s, ela é
+  repetida no início, com efeito “rebobinar” na volta.
+- **Efeitos no momento certo** (`planEffects`): whoosh na entrada, impacto no maior pico, ding/pop nas palavras-chave
+  (no máximo 6 por corte, com espaçamento). Biblioteca passou de 8 para 27 efeitos gerados (CC0).
+- **Trilhas**: 3 variações por clima (tom, andamento e ordem dos acordes); cada corte do mesmo vídeo pega uma diferente.
+- **Visual** (`src/shared/ffmpeg.ts`): zoom em degrau com `zoompan` (sem animação para não tremer), barra de
+  progresso com `overlay` de uma faixa branca (o `drawbox` não aceita tempo: `t` é a espessura), título em
+  caixa branca no topo por 3,2 s e palavras-chave em verde e maiores na legenda (ASS).
+- **Enquadramento inteligente** (`src/shared/track.ts`): quadros de 96 px a 2/s, pele + movimento por coluna,
+  mediana e zona morta para a “câmera” não tremer. Só recorta quando a pessoa ocupa bastante a imagem; webcam
+  pequena de gameplay → vídeo inteiro com fundo desfocado. Novo padrão “Inteligente”; quem usava “Vídeo inteiro”
+  (o padrão antigo) passa para ele uma vez.
+- **Testes**: `tests/smart.test.ts`, `tests/freeai.test.ts`, exportação real com recorte móvel/zoom/barra/título
+  conferida por pixels, modo automático com IA simulada (e IA fora do ar), E2E com Groq simulado (colar chave,
+  testar, gerar cortes com a IA). Resultado: typecheck limpo, 209 testes passando, E2E ok.
+- **Limites honestos**: a detecção de risada e de pessoa é heurística (pode errar em jogos com muita cor de pele
+  ou fala muito animada); a IA grátis depende dos limites e da disponibilidade de cada serviço. Não foi testado
+  contra o Groq real daqui (rede bloqueada); o formato é o OpenAI-compatível documentado.

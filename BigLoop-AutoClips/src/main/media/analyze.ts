@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { detectSilences, downsamplePeaks, PcmAnalyzer, parseShowinfoTimes, perSecondDb, WINDOW_SEC } from '../../shared/analysis'
+import { detectReactions, detectSilences, downsamplePeaks, PcmAnalyzer, parseShowinfoTimes, perSecondDb, WINDOW_SEC } from '../../shared/analysis'
 import type { AnalysisResult, MediaMetadata } from '../../shared/types'
 
 const SAMPLE_RATE = 8000
@@ -37,7 +37,7 @@ export function analyzeAudio(
   path: string,
   durationSec: number,
   opts: AnalyzeOptions
-): Promise<Pick<AnalysisResult, 'peaks' | 'bucketSec' | 'rmsDb' | 'silences'>> {
+): Promise<Pick<AnalysisResult, 'peaks' | 'bucketSec' | 'rmsDb' | 'silences' | 'reactions'>> {
   return new Promise((resolve, reject) => {
     const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-i', path, '-map', `0:a:${opts.audioTrack ?? 0}`, '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', 'pipe:1']
     let child
@@ -71,7 +71,8 @@ export function analyzeAudio(
         peaks: downsamplePeaks(analyzer.peak, Math.min(buckets, 200_000)),
         bucketSec: (analyzer.peak.length * WINDOW_SEC) / Math.min(buckets, 200_000),
         rmsDb: perSecondDb(analyzer.rmsDb, WINDOW_SEC),
-        silences: detectSilences(analyzer.rmsDb, WINDOW_SEC)
+        silences: detectSilences(analyzer.rmsDb, WINDOW_SEC),
+        reactions: detectReactions(analyzer.rmsDb, analyzer.zcr, WINDOW_SEC)
       })
     })
   })
@@ -111,7 +112,7 @@ export async function analyzeMedia(meta: MediaMetadata, opts: AnalyzeOptions): P
   const hasAudio = meta.audioTracks.length > 0
   const audio = hasAudio
     ? await analyzeAudio(meta.path, meta.durationSec, opts)
-    : { peaks: [], bucketSec: 1, rmsDb: [], silences: [] }
+    : { peaks: [], bucketSec: 1, rmsDb: [], silences: [], reactions: [] }
   const scenes = meta.video && opts.detectScenes !== false ? await detectScenes(meta.path, meta.durationSec, opts) : []
   return { durationSec: meta.durationSec, ...audio, scenes, hasAudio, createdAt: Date.now() }
 }

@@ -38,6 +38,7 @@ const api: BigLoopApi = {
   exportInterchange: (projectId, kind, segmentIds) => invoke(IPC.exportInterchange, projectId, kind, segmentIds),
   aiSocial: (projectId, segmentId, platform) => invoke(IPC.aiSocial, projectId, segmentId, platform),
   aiTranslate: (projectId, language) => invoke(IPC.aiTranslate, projectId, language),
+  aiTest: () => invoke(IPC.aiTest),
   autoStart: (path, options) => invoke(IPC.autoStart, path, options),
   autoList: () => invoke(IPC.autoList),
   autoCancel: (id) => invoke(IPC.autoCancel, id),

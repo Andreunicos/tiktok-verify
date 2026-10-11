@@ -20,9 +20,13 @@ export class PcmAnalyzer {
   private sumSq = 0
   private peakAbs = 0
   private count = 0
+  private crossings = 0
+  private prev = 0
   private leftover: number | null = null
   readonly rmsDb: number[] = []
   readonly peak: number[] = []
+  /** Taxa de cruzamentos por zero (0..1) por janela: alta em sons ásperos (risada, grito, chiado). */
+  readonly zcr: number[] = []
 
   constructor(sampleRate: number, windowSec = WINDOW_SEC) {
     this.perWindow = Math.max(1, Math.round(sampleRate * windowSec))
@@ -45,6 +49,8 @@ export class PcmAnalyzer {
     this.sumSq += v * v
     const a = Math.abs(v)
     if (a > this.peakAbs) this.peakAbs = a
+    if ((v >= 0) !== (this.prev >= 0)) this.crossings++
+    this.prev = v
     if (++this.count >= this.perWindow) this.flush()
   }
 
@@ -52,9 +58,11 @@ export class PcmAnalyzer {
     if (this.count === 0) return
     this.rmsDb.push(toDb(Math.sqrt(this.sumSq / this.count)))
     this.peak.push(this.peakAbs)
+    this.zcr.push(this.crossings / this.count)
     this.sumSq = 0
     this.peakAbs = 0
     this.count = 0
+    this.crossings = 0
   }
 }
 
@@ -120,4 +128,59 @@ export function parseShowinfoTimes(stderr: string): number[] {
   const out: number[] = []
   for (const m of stderr.matchAll(/pts_time:\s*([\d.]+)/g)) out.push(Math.round(Number(m[1]) * 100) / 100)
   return out
+}
+
+export interface Reaction {
+  startSec: number
+  endSec: number
+  kind: 'risada' | 'grito'
+}
+
+/**
+ * Detecta risadas e gritos só com o áudio (sem IA): risada = volume alto que pulsa num ritmo
+ * regular de 3–7 vezes por segundo ("ha-ha-ha"); grito = volume bem acima do normal, contínuo e
+ * áspero (muitos cruzamentos por zero). É uma estimativa: serve para dar pontos ao trecho.
+ */
+export function detectReactions(rmsDb: number[], zcr: number[], windowSec = WINDOW_SEC): Reaction[] {
+  const n = Math.min(rmsDb.length, zcr.length)
+  if (n === 0) return []
+  const voicedIdx = [...Array(n).keys()].filter((i) => rmsDb[i] > -60)
+  if (voicedIdx.length < 20) return []
+  const med = percentile(voicedIdx.map((i) => rmsDb[i]), 50)
+  const zmed = Math.max(0.01, percentile(voicedIdx.map((i) => zcr[i]), 50))
+  const seg = Math.max(8, Math.round(1 / windowSec)) // 1 s
+  const step = Math.max(1, Math.round(0.25 / windowSec))
+  const hits: Reaction[] = []
+  for (let a = 0; a + seg <= n; a += step) {
+    // Envelope com piso (os vales entre um "ha" e outro não contam como silêncio absoluto)
+    const env = rmsDb.slice(a, a + seg).map((v) => Math.max(v, med - 25))
+    const mean = env.reduce((x, y) => x + y, 0) / seg
+    const std = Math.sqrt(env.reduce((x, y) => x + (y - mean) ** 2, 0) / seg)
+    const z = zcr.slice(a, a + seg).reduce((x, y) => x + y, 0) / seg
+    // Volume pela média de potência (não pela média em dB, que afunda com os vales)
+    const loud = 10 * Math.log10(env.reduce((x, y) => x + 10 ** (y / 10), 0) / seg) - med
+    let kind: Reaction['kind'] | null = null
+    if (loud >= 9 && z >= zmed * 1.4 && std < 4) kind = 'grito'
+    else if (loud >= 3 && std >= 3 && z >= zmed * 1.1) {
+      // periodicidade do envelope (autocorrelação nos atrasos de 150–330 ms)
+      const d = env.map((v) => v - mean)
+      const ac0 = d.reduce((x, y) => x + y * y, 0) || 1
+      let best = 0
+      const lo = Math.max(2, Math.round(0.15 / windowSec))
+      const hi = Math.max(lo, Math.round(0.33 / windowSec))
+      for (let lag = lo; lag <= hi; lag++) {
+        let s = 0
+        for (let i = 0; i + lag < seg; i++) s += d[i] * d[i + lag]
+        best = Math.max(best, s / ac0)
+      }
+      if (best >= 0.45) kind = 'risada'
+    }
+    if (!kind) continue
+    const startSec = Math.round(a * windowSec * 100) / 100
+    const endSec = Math.round((a + seg) * windowSec * 100) / 100
+    const last = hits[hits.length - 1]
+    if (last && last.kind === kind && startSec <= last.endSec + 0.3) last.endSec = endSec
+    else hits.push({ startSec, endSec, kind })
+  }
+  return hits.filter((h) => h.endSec - h.startSec >= (h.kind === 'risada' ? 1.2 : 1))
 }
