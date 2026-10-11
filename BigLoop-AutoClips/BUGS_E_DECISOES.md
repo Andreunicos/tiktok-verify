@@ -154,3 +154,21 @@ Pedido: deixar o app mais inteligente, com mais sons, e IA open source ilimitada
 - **Testes:** gameplay sintético (parado → ação com pico → parado): o corte cobre a ação, abre com o pico e sai
   em 1080×1920; testes de `removeDeadTime`, `peakTeaserRange`, `parseScenesAndMotion` e do layout de jogo.
   214+ testes e E2E passando.
+
+## "Não entende o contexto, sem título, descrição nem legenda" (2026-10-11)
+
+- **Causa raiz:** tudo que é "profissional" (legenda, título na tela, descrição, IA escolhendo pelo contexto)
+  depende da transcrição. No PC do usuário as legendas automáticas não estavam instaladas e a IA não tinha chave,
+  então o app cortava só por volume/movimento.
+- **Mudanças:**
+  - **Instala a transcrição sozinho** no primeiro corte (whisper.cpp + modelo `small`, download único), com o
+    progresso na etapa "Transcrevendo a fala". Falhou? Avisa e segue sem legenda.
+  - **IA sem chave** (Pollinations, modelos abertos, sem cadastro) ligada por padrão como último recurso da fila
+    Groq → Cerebras → OpenRouter → Pollinations → regras. Pode desligar em Configurações → IA. Não testado contra
+    o serviço real daqui (rede bloqueada); o endereço novo e o antigo estão na fila. Política de Privacidade atualizada.
+  - **Pedido escrito** na tela inicial ("faz 5 cortes de 30 segundos dos momentos engraçados"): quantidade,
+    duração, clima da música e plataforma são lidos localmente (`src/shared/instructions.ts`) e o texto inteiro
+    vai para a IA com prioridade.
+  - **Título na tela sempre que houver fala** (da IA ou a frase mais forte), cortado em ~50 caracteres.
+- **Testes:** `tests/instructions.test.ts`, Pollinations em `tests/freeai.test.ts`, modo automático que instala
+  a transcrição e segue o pedido (2 cortes de ~20 s, pedido repassado à IA). E2E passando.

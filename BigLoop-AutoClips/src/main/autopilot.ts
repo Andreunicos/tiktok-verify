@@ -7,6 +7,7 @@ import { hashtags as localHashtags, localTitle } from '../shared/social'
 import { findPhrase, peakTeaserRange, planEffects, planZooms, removeDeadTime, snapToSentences, toOutputTime as toOut, totalLength, withTeaser } from '../shared/smart'
 import { outputSize } from '../shared/presets'
 import { suggestClips } from '../shared/suggest'
+import { parseInstructions } from '../shared/instructions'
 import { formatTimecode } from '../shared/time'
 import type {
   AnalysisResult,
@@ -62,6 +63,8 @@ export interface AutoDeps {
   analyze(meta: MediaMetadata, signal: AbortSignal, onProgress: (ratio: number) => void): Promise<AnalysisResult>
   /** null quando a transcrição não está configurada. */
   transcriber: (() => ((path: string, signal: AbortSignal, onProgress: (ratio: number) => void) => Promise<Transcript>) | null)
+  /** Instala as legendas automáticas (whisper.cpp + modelo) quando faltam. */
+  installTranscriber?: (signal: AbortSignal, onProgress: (label: string, ratio: number) => void) => Promise<void>
   /** Texto para redes com IA (opcional). Retorna null se desligada. */
   aiSocial?: (text: string, platform: string) => Promise<{ title: string; description: string; hashtags: string[] } | null>
   /** Música do clima pedido (da biblioteca ou baixada). Lança erro se não conseguir. */
@@ -69,7 +72,7 @@ export interface AutoDeps {
   /** Arquivo de um efeito gerado (ex.: 'whoosh'). */
   pickEffect?: (key: string) => string | null
   /** IA (grátis ou Claude) que escolhe os melhores trechos e escreve os textos. null = desligada. */
-  aiPlan?: (platform: string, count: number, candidates: PlanCandidate[]) => Promise<{ via: string; clips: PlannedClip[] } | null>
+  aiPlan?: (platform: string, count: number, candidates: PlanCandidate[], request?: string) => Promise<{ via: string; clips: PlannedClip[] } | null>
   /** Decide o enquadramento 9:16 seguindo a pessoa. */
   track?: (path: string, span: Range, srcW: number, srcH: number, cropFrac: number, signal: AbortSignal) => Promise<TrackDecision>
   enqueue(req: CutRequest): Job
@@ -89,6 +92,14 @@ class Cancelled extends Error {
   }
 }
 
+/** Título da tela: até ~50 caracteres, cortando numa palavra. */
+const shortTitle = (t: string) => {
+  const clean = t.replace(/\s+/g, ' ').trim()
+  if (clean.length < 8) return ''
+  if (clean.length <= 52) return clean
+  const cut = clean.slice(0, 50)
+  return `${cut.slice(0, Math.max(30, cut.lastIndexOf(' ')))}…`
+}
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 const round = (n: number) => Math.round(n * 1000) / 1000
 const clipText = (cues: Transcript['cues'] | undefined, ranges: Range[]) =>
@@ -139,7 +150,16 @@ export class AutoPilot extends EventEmitter {
   }
 
   /** Começa a gerar cortes. Retorna na hora; o progresso chega por 'change'. */
-  start(path: string, options: AutoOptions, origin: Project['origin'] = 'manual'): AutoRun {
+  start(path: string, rawOptions: AutoOptions, origin: Project['origin'] = 'manual'): AutoRun {
+    // O pedido escrito manda: quantidade, duração, música e plataforma citadas no texto
+    const asked = rawOptions.instructions?.trim() ? parseInstructions(rawOptions.instructions) : {}
+    const options: AutoOptions = {
+      ...rawOptions,
+      ...(asked.count ? { count: asked.count } : {}),
+      ...(asked.music ? { music: asked.music } : {}),
+      ...(asked.platform ? { platform: asked.platform } : {}),
+      customSec: asked.durationSec ?? undefined
+    }
     const steps: AutoStep[] = (Object.keys(STEP_LABELS) as AutoStepKey[]).map((key) => ({ key, label: STEP_LABELS[key], state: 'pendente' }))
     const run: AutoRun = {
       id: randomUUID(),
@@ -279,23 +299,36 @@ export class AutoPilot extends EventEmitter {
         run.steps[1].detail = `${plural(analysis.silences.length, 'pausa', 'pausas')} · ${plural(analysis.scenes.length, 'mudança de cena', 'mudanças de cena')}`
       }
 
-      // 3. Transcrever (opcional)
+      // 3. Transcrever: sem isso não há legenda, título nem IA entendendo o contexto.
+      // Se as legendas automáticas não estão instaladas, instala sozinho (download único).
       let transcript = d.getProject(project.id)?.transcript ?? null
-      const transcriber = d.transcriber()
+      let transcriber = d.transcriber()
       if (transcript?.cues.length) {
         this.skip(run, 'transcrever', 'Já transcrito antes')
         run.steps[2].state = 'ok'
-      } else if (!transcriber) {
+      } else if (!transcriber && !d.installTranscriber) {
         this.skip(run, 'transcrever', 'Legendas automáticas não instaladas — ative em Configurações (1 clique)')
         if (o.subtitles) run.notes.push('Os cortes saíram sem legenda porque as legendas automáticas não estão instaladas.')
       } else {
+        const st = run.steps[2]
         try {
-          transcript = await this.step(run, 'transcrever', signal, (p) => transcriber(run.path, signal, p))
+          transcript = await this.step(run, 'transcrever', signal, async (p) => {
+            if (!transcriber) {
+              await d.installTranscriber!(signal, (label, ratio) => {
+                st.detail = `Instalando as legendas automáticas (só na 1ª vez): ${label}`
+                p(ratio * 0.3)
+              })
+              transcriber = d.transcriber()
+              if (!transcriber) throw new Error('as legendas automáticas não ficaram prontas')
+              st.detail = 'Transcrevendo a fala…'
+            }
+            const base = st.detail?.startsWith('Transcrevendo') ? 0.3 : 0
+            return transcriber(run.path, signal, (r) => p(base + r * (1 - base)))
+          })
           d.updateProject(project.id, { transcript })
-          run.steps[2].detail = `${plural(transcript.cues.length, 'fala', 'falas')}${transcript.language ? ` · idioma ${transcript.language}` : ''}`
+          st.detail = `${plural(transcript.cues.length, 'fala', 'falas')}${transcript.language ? ` · idioma ${transcript.language}` : ''}`
         } catch (err) {
           if (err instanceof Cancelled || signal.aborted) throw new Cancelled()
-          const st = run.steps[2]
           st.state = 'erro'
           st.detail = (err as Error).message
           run.notes.push(`Não deu para transcrever (${(err as Error).message}). Os cortes saem sem legenda.`)
@@ -305,7 +338,7 @@ export class AutoPilot extends EventEmitter {
       }
 
       // 4. Escolher: regras locais acham candidatos; a IA (se ativa) escolhe entre eles e escreve os textos
-      const len = LENGTHS[o.length]
+      const len = o.customSec ? { minSec: o.customSec.min, maxSec: o.customSec.max, label: `${o.customSec.min}–${o.customSec.max} s` } : LENGTHS[o.length]
       const cues = transcript?.cues ?? []
       let aiVia = ''
       const clips = await this.step(run, 'escolher', signal, async () => {
@@ -321,7 +354,7 @@ export class AutoPilot extends EventEmitter {
         if (wantAi && snapped.length > 0) {
           try {
             const cands: PlanCandidate[] = snapped.map(({ s: sg, range }) => ({ id: sg.id, startSec: range.startSec, endSec: range.endSec, ruleScore: sg.score, text: clipText(cues, [range]) }))
-            const res = await d.aiPlan!(PLATFORM_LABEL[o.platform], o.count, cands)
+            const res = await d.aiPlan!(PLATFORM_LABEL[o.platform], o.count, cands, o.instructions?.trim() || undefined)
             if (res) {
               planned = new Map(res.clips.map((c) => [c.id, c]))
               aiVia = res.via
@@ -363,7 +396,7 @@ export class AutoPilot extends EventEmitter {
             hook: plan?.hook ?? '',
             keywords: plan?.keywords ?? [],
             // Título na tela só quando é curto e bom (da IA ou a primeira frase com gancho)
-            screenTitle: plan?.title && plan.title.length <= 60 ? plan.title : local.length >= 12 && local.length <= 55 && /[?!]/.test(local) ? local : ''
+            screenTitle: shortTitle(plan?.title || (text ? local : ''))
           }
         })
       })

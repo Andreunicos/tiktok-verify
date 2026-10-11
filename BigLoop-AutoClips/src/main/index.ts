@@ -458,11 +458,19 @@ function setupAutopilot(): void {
             onProgress: (_st, r) => onProgress(r)
           })
       },
-      aiPlan: async (platform, count, candidates) => {
+      installTranscriber:
+        process.platform === 'win32'
+          ? async (signal, onProgress) => {
+              const r = await installWhisper('small', { baseDir: join(app.getPath('userData'), 'ferramentas'), signal, onProgress })
+              settings.update({ whisperPath: r.whisperPath, whisperModelPath: r.modelPath, whisperLanguage: settings.get().whisperLanguage || 'pt' })
+              log('info', 'Legendas automáticas instaladas pelo modo automático', r)
+            }
+          : undefined,
+      aiPlan: async (platform, count, candidates, request) => {
         const ai = currentAi()
         if (!ai) return null
         log('info', 'IA: escolhendo os melhores trechos', { candidatos: candidates.length })
-        const clips = await planClips(ai.ask, platform, count, candidates)
+        const clips = await planClips(ai.ask, platform, count, candidates, request)
         return { via: ai.via(), clips }
       },
       track: (path, span, w, h, cropFrac, signal) => trackPerson(requireFfmpeg(), path, span, w, h, cropFrac, signal),
@@ -566,8 +574,11 @@ function currentAi(): { ask: AskJson; via: () => string } | null {
     cerebras: decryptSecret(s.cerebrasKeyEnc),
     openrouter: decryptSecret(s.openrouterKeyEnc)
   }
-  const free = new FreeAi({ keys, baseOverride: process.env.BIGLOOP_FREEAI_BASE || undefined, log })
+  const free = new FreeAi({ keys, allowKeyless: s.keylessAi, baseOverride: process.env.BIGLOOP_FREEAI_BASE || undefined, log })
   const claude = s.aiKeyEnc ? claudeAsk(decryptSecret(s.aiKeyEnc), s.aiModel) : null
+  const hasFreeKey = Object.values(keys).some((k) => !!k?.trim())
+  // Quem já usava o Claude e não colou chave grátis continua com o Claude (antes da IA sem chave)
+  if (s.aiProvider === 'gratis' && !hasFreeKey && s.aiEnabled && claude) return { ask: claude, via: () => 'Claude' }
   if (s.aiProvider === 'gratis' && free.configured().length > 0) {
     let via = ''
     return {
@@ -1017,7 +1028,7 @@ function registerIpc(): void {
     try {
       if (!existsSync(path)) throw new Error('Arquivo não encontrado.')
       settings.update({ auto: options })
-      return ok(autopilot.start(path, settings.get().auto, 'manual'))
+      return ok(autopilot.start(path, { ...settings.get().auto, instructions: typeof options?.instructions === 'string' ? options.instructions.slice(0, 500) : undefined }, 'manual'))
     } catch (err) {
       return fail(err)
     }

@@ -382,3 +382,7 @@ h2.plain { text-transform: none; letter-spacing: 0; color: var(--text); font-siz
 .post-status.erro { color: var(--err); }
 .post-status.enviado, .post-status.publicado { color: var(--ok); }
 details > summary { cursor: pointer; margin-bottom: 6px; }
+
+.wish { display: grid; gap: 6px; margin: 14px 0 6px; }
+.wish textarea { width: 100%; resize: vertical; min-height: 56px; padding: 10px 12px; border-radius: 12px; border: 2px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
+.wish textarea:focus { outline: none; border-color: var(--accent); }

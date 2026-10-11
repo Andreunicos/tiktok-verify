@@ -44,12 +44,14 @@ const SYSTEM =
   'pelo potencial de prender a atenção: gancho forte no começo, história com começo/meio/fim, emoção (risada, surpresa, ' +
   'polêmica, dica útil) e final satisfatório. Seja fiel ao texto; não invente fatos.'
 
-export function buildPlanPrompt(platform: string, count: number, candidates: PlanCandidate[]): string {
+export function buildPlanPrompt(platform: string, count: number, candidates: PlanCandidate[], request?: string): string {
   const list = candidates
     .map((c) => `### ${c.id} (${Math.round(c.endSec - c.startSec)} s)\n${c.text.slice(0, 1800) || '(sem fala)'}`)
     .join('\n\n')
   return (
-    `Plataforma: ${platform}. Preciso dos ${count} melhores cortes entre os candidatos abaixo.\n\n${list}\n\n` +
+    `Plataforma: ${platform}. Preciso dos ${count} melhores cortes entre os candidatos abaixo.\n` +
+    (request ? `Pedido de quem gravou (siga com prioridade ao dar as notas): "${request.slice(0, 400)}"\n` : '') +
+    `\n${list}\n\n` +
     'Para CADA candidato devolva: id (igual ao de cima), score de 0 a 100, title (até 70 caracteres, chamativo), ' +
     'description (1 a 2 frases), hashtags (3 a 8, com #), hook (a frase mais forte do trecho, copiada EXATAMENTE como está no texto, ' +
     'curta — até 15 palavras — ou "" se não houver) e keywords (até 5 palavras do texto que merecem destaque na legenda). ' +
@@ -83,8 +85,8 @@ export function normalizePlan(raw: z.infer<typeof PlanSchema>, candidates: PlanC
   return out
 }
 
-export async function planClips(ask: AskJson, platform: string, count: number, candidates: PlanCandidate[]): Promise<PlannedClip[]> {
-  const raw = await ask(SYSTEM, buildPlanPrompt(platform, count, candidates), PlanSchema)
+export async function planClips(ask: AskJson, platform: string, count: number, candidates: PlanCandidate[], request?: string): Promise<PlannedClip[]> {
+  const raw = await ask(SYSTEM, buildPlanPrompt(platform, count, candidates, request), PlanSchema)
   return normalizePlan(raw, candidates)
 }
 
