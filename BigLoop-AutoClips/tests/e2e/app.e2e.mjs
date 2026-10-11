@@ -120,14 +120,14 @@ const problems = []
 page.on('console', (m) => m.type() === 'error' && problems.push(`console: ${m.text()}`))
 page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`))
 await page.setViewportSize({ width: 1440, height: 900 })
-// A captura de tela às vezes falha no Xvfb da CI logo após a janela abrir: tenta de novo antes de desistir
+// No xvfb, a captura às vezes falha logo após recarregar (janela ainda sem quadro); tenta de novo
 const shot = async (name) => {
-  for (let i = 0; ; i++) {
+  for (let i = 1; ; i++) {
     try {
       return await page.screenshot({ path: join(SHOTS, `${name}.png`) })
-    } catch (err) {
-      if (i >= 4 || !/Unable to capture screenshot/.test(String(err))) throw err
-      await page.waitForTimeout(500)
+    } catch (e) {
+      if (i >= 5 || !/Unable to capture screenshot/.test(String(e))) throw e
+      await page.waitForTimeout(500 * i)
     }
   }
 }
