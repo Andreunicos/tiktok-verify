@@ -1,0 +1,58 @@
+name: BigLoop AutoClips CI
+
+on:
+  push:
+    paths: ['BigLoop-AutoClips/**', '.github/workflows/bigloop-ci.yml']
+  pull_request:
+    paths: ['BigLoop-AutoClips/**', '.github/workflows/bigloop-ci.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: BigLoop-AutoClips
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: BigLoop-AutoClips/package-lock.json
+      - name: FFmpeg e tela virtual
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Teste de ponta a ponta (Electron)
+        run: xvfb-run -a npm run test:e2e
+        env:
+          E2E_SCREENSHOTS: ${{ github.workspace }}/e2e-telas
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: e2e-telas
+          path: e2e-telas
+          if-no-files-found: ignore
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: BigLoop-AutoClips/package-lock.json
+      - name: FFmpeg
+        run: choco install ffmpeg -y --no-progress
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
