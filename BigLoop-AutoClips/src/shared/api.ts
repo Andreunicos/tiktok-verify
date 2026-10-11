@@ -107,6 +107,8 @@ export interface BigLoopApi {
   setSecret(kind: SecretKind, value: string): Promise<Result<boolean>>
   /** Testa a IA configurada com um pedido mínimo. */
   aiTest(): Promise<Result<string>>
+  /** 👍/👎 num corte do modo automático: o app aprende o seu gosto. */
+  autoFeedback(runId: string, segmentId: string, value: 'up' | 'down' | null): Promise<Result<boolean>>
   toolStatus(refresh?: boolean): Promise<ToolStatus>
   // OBS e monitoramento
   obsStatus(): Promise<ObsStatus>

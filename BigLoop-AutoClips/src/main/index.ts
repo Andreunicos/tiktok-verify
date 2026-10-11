@@ -30,7 +30,7 @@ import { downloadToLibrary, MOOD_QUERIES, searchOpenverse } from './openverse'
 import { MUSIC_VARIANTS } from '../shared/music'
 import { z } from 'zod'
 import { FREE_PROVIDERS, FreeAi, type FreeProviderId } from './freeai'
-import { planClips } from './brain'
+import { discoverMoments, planClips } from './brain'
 import { trackPerson } from './media/track'
 import { SoundLibrary } from './sounds'
 import { buildAuthUrl, createPkce, exchangeCode, TIKTOK, TikTokSession, waitForAuthCode, type TikTokAppConfig, type TikTokTokens } from './tiktok'
@@ -470,8 +470,14 @@ function setupAutopilot(): void {
         const ai = currentAi()
         if (!ai) return null
         log('info', 'IA: escolhendo os melhores trechos', { candidatos: candidates.length })
-        const clips = await planClips(ai.ask, platform, count, candidates, request)
+        const clips = await planClips(ai.ask, platform, count, candidates, request, settings.get().taste)
         return { via: ai.via(), clips }
+      },
+      aiDiscover: async (cues, opts, signal) => {
+        const ai = currentAi()
+        if (!ai) return null
+        log('info', 'IA: lendo a transcrição inteira', { falas: cues.length })
+        return discoverMoments(ai.ask, cues, { ...opts, taste: settings.get().taste, signal })
       },
       track: (path, span, w, h, cropFrac, signal) => trackPerson(requireFfmpeg(), path, span, w, h, cropFrac, signal),
       aiSocial: async (text, platform) => {
@@ -994,6 +1000,29 @@ function registerIpc(): void {
       if (!text.trim()) throw new Error('O trecho não tem transcrição. Transcreva antes.')
       log('info', 'IA: gerando texto para redes', { chars: text.length })
       return ok(await socialCopyWith(ai.ask, text, platform))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.autoFeedback, (_e, runId: string, segmentId: string, value: 'up' | 'down' | null) => {
+    try {
+      const before = autopilot.get(runId)?.clips.find((c) => c.segmentId === segmentId)?.feedback
+      const clip = autopilot.setFeedback(runId, segmentId, value)
+      if (!clip) throw new Error('Corte não encontrado.')
+      const s = settings.get()
+      // Aprende só quando muda de opinião (não conta duas vezes o mesmo clique)
+      if (value && value !== before) {
+        const patch: Partial<AppSettings> = {}
+        if (clip.features) patch.learnedWeights = learnWeights(s.learnedWeights, clip.features, value === 'up')
+        const note = [clip.title, clip.reasons.find((r) => r.startsWith('IA: ') && !r.startsWith('IA: nota'))?.slice(4)].filter(Boolean).join(' — ').slice(0, 160)
+        const liked = s.taste.liked.filter((x) => x !== note)
+        const disliked = s.taste.disliked.filter((x) => x !== note)
+        ;(value === 'up' ? liked : disliked).push(note)
+        patch.taste = { liked: liked.slice(-20), disliked: disliked.slice(-20) }
+        settings.update(patch)
+        log('info', 'Aprendi com a opinião sobre um corte', { value })
+      }
+      return ok(true)
     } catch (err) {
       return fail(err)
     }

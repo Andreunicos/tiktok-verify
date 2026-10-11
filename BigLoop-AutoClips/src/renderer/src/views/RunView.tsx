@@ -168,7 +168,28 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOp
                       nota {c.score}
                     </span>
                   )}
+                  {c.description && <p className="small clip-desc">{c.description.split('\n')[0]}</p>}
                   <p className="muted small hashtags">{c.hashtags.join(' ')}</p>
+                  {c.status === 'concluído' && (
+                    <div className="row feedback" role="group" aria-label="O que achou deste corte?">
+                      <span className="muted small">Gostou?</span>
+                      {(['up', 'down'] as const).map((v) => (
+                        <button
+                          key={v}
+                          className={`small ghost ${c.feedback === v ? 'on' : ''}`}
+                          aria-pressed={c.feedback === v}
+                          aria-label={v === 'up' ? 'Gostei' : 'Não gostei'}
+                          onClick={async () => {
+                            const res = await api.autoFeedback(run.id, c.segmentId, c.feedback === v ? null : v)
+                            if (!res.ok) toast(res.error, 'erro')
+                            else if (c.feedback !== v) toast(v === 'up' ? 'Anotado! Vou fazer mais cortes assim.' : 'Anotado! Vou evitar cortes assim.', 'ok')
+                          }}
+                        >
+                          {v === 'up' ? '👍' : '👎'}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {c.error && <p className="error small">{c.error}</p>}
                   {(c.posts ?? []).map((p) => (
                     <p key={p.at} className={`small post-status ${p.status}`}>

@@ -6,7 +6,7 @@ import { applyPreset } from '../shared/presets'
 import { hashtags as localHashtags, localTitle } from '../shared/social'
 import { findPhrase, peakTeaserRange, planEffects, planZooms, removeDeadTime, snapToSentences, toOutputTime as toOut, totalLength, withTeaser } from '../shared/smart'
 import { outputSize } from '../shared/presets'
-import { suggestClips } from '../shared/suggest'
+import { scoreRange, suggestClips } from '../shared/suggest'
 import { parseInstructions } from '../shared/instructions'
 import { formatTimecode } from '../shared/time'
 import type {
@@ -26,12 +26,13 @@ import type {
   Project,
   Range,
   Segment,
+  Suggestion,
   SuggestionFeatures,
   Transcript,
   VisualExtras
 } from '../shared/types'
 import type { TrackDecision } from '../shared/track'
-import { blendScore, type PlanCandidate, type PlannedClip } from './brain'
+import { blendScore, type Moment, type PlanCandidate, type PlannedClip } from './brain'
 import { readJson, writeJsonAtomic } from './jsonFile'
 
 export const LENGTHS: Record<AutoLength, { minSec: number; maxSec: number; label: string }> = {
@@ -73,6 +74,8 @@ export interface AutoDeps {
   pickEffect?: (key: string) => string | null
   /** IA (grátis ou Claude) que escolhe os melhores trechos e escreve os textos. null = desligada. */
   aiPlan?: (platform: string, count: number, candidates: PlanCandidate[], request?: string) => Promise<{ via: string; clips: PlannedClip[] } | null>
+  /** A IA lê a transcrição inteira e aponta momentos que funcionam sozinhos. null = IA desligada. */
+  aiDiscover?: (cues: Transcript['cues'], opts: { minSec: number; maxSec: number; count: number; durationSec: number; request?: string }, signal: AbortSignal) => Promise<Moment[] | null>
   /** Decide o enquadramento 9:16 seguindo a pessoa. */
   track?: (path: string, span: Range, srcW: number, srcH: number, cropFrac: number, signal: AbortSignal) => Promise<TrackDecision>
   enqueue(req: CutRequest): Job
@@ -192,6 +195,16 @@ export class AutoPilot extends EventEmitter {
     run.finishedAt = Date.now()
     for (const s of run.steps) if (s.state === 'rodando' || s.state === 'pendente') s.state = 'pulado'
     this.changed(run)
+  }
+
+  /** Guarda o 👍/👎 da pessoa num corte. Retorna o corte (para o app aprender com ele). */
+  setFeedback(runId: string, segmentId: string, value: 'up' | 'down' | null): AutoClip | null {
+    const run = this.get(runId)
+    const clip = run?.clips.find((c) => c.segmentId === segmentId)
+    if (!run || !clip) return null
+    clip.feedback = value ?? undefined
+    this.changed(run)
+    return clip
   }
 
   /** Registra/atualiza um envio de um corte para uma rede social. */
@@ -343,7 +356,28 @@ export class AutoPilot extends EventEmitter {
       let aiVia = ''
       const clips = await this.step(run, 'escolher', signal, async () => {
         const wantAi = !!d.aiPlan && cues.length > 0
-        const pool = suggestClips({ analysis: analysis!, cues, options: { minSec: len.minSec, maxSec: len.maxSec, count: wantAi ? Math.min(15, o.count * 3) : o.count }, weights: d.learnedWeights() })
+        const rulePool = suggestClips({ analysis: analysis!, cues, options: { minSec: len.minSec, maxSec: len.maxSec, count: wantAi ? Math.min(12, o.count * 3) : o.count }, weights: d.learnedWeights() })
+        // A IA lê a live inteira e aponta momentos que fazem sentido sozinhos (com contexto)
+        let discovered: Suggestion[] = []
+        if (wantAi && d.aiDiscover) {
+          try {
+            run.steps[3].detail = 'A IA está lendo a transcrição inteira…'
+            this.changed(run, false)
+            const moments = await d.aiDiscover(cues, { minSec: len.minSec, maxSec: len.maxSec, count: o.count, durationSec: meta.durationSec, request: o.instructions?.trim() || undefined }, signal)
+            discovered = (moments ?? []).flatMap((m, i) => {
+              const sc = scoreRange(analysis!, cues, { startSec: m.startSec, endSec: m.endSec }, d.learnedWeights())
+              return sc ? [{ ...sc, id: `ia${i}-${Math.round(m.startSec)}`, reasons: [`IA: ${m.reason || 'momento completo'}`, ...sc.reasons] }] : []
+            })
+          } catch (err) {
+            if (signal.aborted) throw new Cancelled()
+            run.notes.push(`A IA não conseguiu ler a transcrição agora (${(err as Error).message}); usei os trechos das regras.`)
+          }
+        }
+        // Junta: momentos da IA primeiro; trechos das regras que repetem a mesma região saem
+        const ov = (x: Suggestion, y: Suggestion) => Math.max(0, Math.min(x.endSec, y.endSec) - Math.max(x.startSec, y.startSec)) / Math.min(x.endSec - x.startSec, y.endSec - y.startSec)
+        const dedup: Suggestion[] = []
+        for (const c of [...discovered, ...rulePool]) if (!dedup.some((k) => ov(k, c) > 0.5)) dedup.push(c)
+        const pool = dedup.slice(0, 15)
         // Não corta no meio da frase
         const snapped = pool.map((sg) => {
           const raw = { startSec: Math.max(0, sg.startSec - 0.15), endSec: Math.min(meta.durationSec, sg.endSec + 0.3) }
@@ -390,13 +424,14 @@ export class AutoPilot extends EventEmitter {
             durationSec: round(range.endSec - range.startSec),
             score,
             reasons: [...(plan ? [`IA: nota ${Math.round(plan.aiScore)} (${aiVia})`] : []), ...(sg?.reasons ?? [])],
+            features: sg?.features,
             status: 'pendente',
             ratio: 0,
             ranges: [range],
             hook: plan?.hook ?? '',
             keywords: plan?.keywords ?? [],
             // Título na tela só quando é curto e bom (da IA ou a primeira frase com gancho)
-            screenTitle: shortTitle(plan?.title || (text ? local : ''))
+            screenTitle: plan?.overlay || shortTitle(plan?.title || (text ? local : ''))
           }
         })
       })
