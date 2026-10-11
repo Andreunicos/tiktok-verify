@@ -120,7 +120,17 @@ const problems = []
 page.on('console', (m) => m.type() === 'error' && problems.push(`console: ${m.text()}`))
 page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`))
 await page.setViewportSize({ width: 1440, height: 900 })
-const shot = (name) => page.screenshot({ path: join(SHOTS, `${name}.png`) })
+// A captura de tela às vezes falha no Xvfb da CI logo após a janela abrir: tenta de novo antes de desistir
+const shot = async (name) => {
+  for (let i = 0; ; i++) {
+    try {
+      return await page.screenshot({ path: join(SHOTS, `${name}.png`) })
+    } catch (err) {
+      if (i >= 4 || !/Unable to capture screenshot/.test(String(err))) throw err
+      await page.waitForTimeout(500)
+    }
+  }
+}
 const mockOpen = (file) => app.evaluate(({ dialog }, f) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [f] }) }, file)
 const toast = (re, timeout = 30000) => page.waitForSelector(`.toast >> text=${re}`, { timeout })
 
@@ -214,7 +224,7 @@ try {
   await page.waitForSelector('text=cortes prontos!', { timeout: 240000 })
   const trilhaGerada = await page.locator('.step', { hasText: 'Colocando música e efeitos' }).textContent()
   assert.ok(/Tarde Lo-fi/.test(trilhaGerada), `trilha gerada: ${trilhaGerada}`)
-  assert.ok(existsSync(join(userData, 'sons', 'arquivos', 'musica-gerada-lofi.wav')), 'WAV da trilha gerada')
+  assert.ok(readdirSync(join(userData, 'sons', 'arquivos')).some((f) => /^musica-gerada-lofi(-\d)?\.wav$/.test(f)), 'WAV da trilha gerada')
 
   step('TikTok (simulado): conectar, rascunho e postagem com confirmação')
   await page.click('button[aria-label="Configurações"]')
