@@ -7,12 +7,13 @@ import { Create } from './views/Create'
 import { Editor } from './views/Editor'
 import { History } from './views/History'
 import { Library } from './views/Library'
+import { Sounds } from './views/Sounds'
 
 const QueueView = lazy(() => import('./views/QueueView'))
 const SettingsView = lazy(() => import('./views/SettingsView'))
 const About = lazy(() => import('./views/About'))
 
-type View = 'criar' | 'cortes' | 'avancado' | 'fila' | 'config' | 'sobre'
+type View = 'criar' | 'cortes' | 'sons' | 'avancado' | 'fila' | 'config' | 'sobre'
 
 export function App() {
   return (
@@ -176,6 +177,9 @@ function Shell() {
           <button className={view === 'cortes' ? 'active' : ''} onClick={() => setView('cortes')}>
             Meus cortes{working > 0 ? <span className="pill">{working}</span> : null}
           </button>
+          <button className={view === 'sons' ? 'active' : ''} onClick={() => setView('sons')}>
+            Sons
+          </button>
           <button className={view === 'avancado' ? 'active' : ''} onClick={() => setView('avancado')}>
             Editor avançado
           </button>
@@ -208,6 +212,7 @@ function Shell() {
             onRefreshTools={refreshTools}
             onAdjust={(pid, sid) => openProject(pid, sid)}
             onOpenRuns={() => setView('cortes')}
+            onOpenAccounts={() => openSettings('contas')}
           />
         )}
         {view === 'cortes' && (
@@ -222,6 +227,7 @@ function Shell() {
             }}
           />
         )}
+        {view === 'sons' && <Sounds />}
         {view === 'avancado' && !projectId && <Library libraryKey={libraryKey} onOpen={(id) => openProject(id)} onImport={async () => openInEditor(await api.pickFile('video'))} />}
         {view === 'avancado' && projectId && (
           <Editor

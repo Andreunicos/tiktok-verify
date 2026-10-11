@@ -2,6 +2,13 @@ import type {
   AnalysisResult,
   AutoOptions,
   AutoRun,
+  Mood,
+  OpenverseResult,
+  SoundItem,
+  SoundKind,
+  TikTokCreator,
+  TikTokPostRequest,
+  TikTokStatus,
   AppInfo,
   AppSettings,
   CutRequest,
@@ -76,6 +83,20 @@ export interface BigLoopApi {
   autoCancel(id: string): Promise<void>
   autoRemove(id: string): Promise<void>
   onAuto(cb: (run: AutoRun) => void): () => void
+  // Biblioteca de sons
+  soundsList(kind?: SoundKind): Promise<SoundItem[]>
+  soundsSearch(query: string, kind: SoundKind, allowAttribution: boolean): Promise<Result<OpenverseResult[]>>
+  soundsDownload(result: OpenverseResult, kind: SoundKind, mood: Mood | null): Promise<Result<SoundItem>>
+  soundsImport(kind: SoundKind, mood: Mood | null): Promise<Result<SoundItem | null>>
+  soundsUpdate(id: string, patch: { title?: string; mood?: Mood | null }): Promise<SoundItem | undefined>
+  soundsRemove(id: string): Promise<void>
+  // TikTok
+  tiktokStatus(): Promise<TikTokStatus>
+  tiktokSaveApp(clientKey: string, clientSecret: string | null, redirectUri: string): Promise<Result<TikTokStatus>>
+  tiktokConnect(): Promise<Result<TikTokStatus>>
+  tiktokDisconnect(): Promise<TikTokStatus>
+  tiktokCreator(): Promise<Result<TikTokCreator>>
+  tiktokSend(req: TikTokPostRequest, taskId: string): Promise<Result<{ publishId: string; status: string }>>
   // Instalação de ferramentas com 1 clique (Windows)
   installWhisper(taskId: string, model: 'base' | 'small'): Promise<Result<{ whisperPath: string; modelPath: string }>>
   installFfmpeg(taskId: string): Promise<Result<{ ffmpegPath: string; ffprobePath: string }>>

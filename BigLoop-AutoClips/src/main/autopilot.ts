@@ -15,8 +15,10 @@ import type {
   AutoStep,
   AutoStepKey,
   CutRequest,
+  AudioExtras,
   ExportOptions,
   Job,
+  Mood,
   MediaMetadata,
   Project,
   Range,
@@ -38,6 +40,7 @@ const STEP_LABELS: Record<AutoStepKey, string> = {
   transcrever: 'Transcrevendo a fala',
   escolher: 'Escolhendo os melhores momentos',
   limpar: 'Tirando “éé”, “hum” e pausas',
+  trilha: 'Colocando música e efeitos',
   exportar: 'Criando os cortes'
 }
 
@@ -55,6 +58,10 @@ export interface AutoDeps {
   transcriber: (() => ((path: string, signal: AbortSignal, onProgress: (ratio: number) => void) => Promise<Transcript>) | null)
   /** Texto para redes com IA (opcional). Retorna null se desligada. */
   aiSocial?: (text: string, platform: string) => Promise<{ title: string; description: string; hashtags: string[] } | null>
+  /** Música do clima pedido (da biblioteca ou baixada). Lança erro se não conseguir. */
+  pickMusic?: (mood: Mood, signal: AbortSignal) => Promise<{ file: string; title: string; attribution: string | null } | null>
+  /** Arquivo de um efeito gerado (ex.: 'whoosh'). */
+  pickEffect?: (key: string) => string | null
   enqueue(req: CutRequest): Job
   cancelJob(id: string): void
   getJob(id: string): Job | undefined
@@ -154,6 +161,16 @@ export class AutoPilot extends EventEmitter {
     run.state = 'cancelado'
     run.finishedAt = Date.now()
     for (const s of run.steps) if (s.state === 'rodando' || s.state === 'pendente') s.state = 'pulado'
+    this.changed(run)
+  }
+
+  /** Registra/atualiza um envio de um corte para uma rede social. */
+  setClipPost(runId: string, segmentId: string, post: import('../shared/types').ClipPost): void {
+    const run = this.get(runId)
+    const clip = run?.clips.find((c) => c.segmentId === segmentId)
+    if (!run || !clip) return
+    const list = (clip.posts ?? []).filter((p) => !(p.platform === post.platform && p.mode === post.mode && p.at === post.at))
+    clip.posts = [...list, post]
     this.changed(run)
   }
 
@@ -338,6 +355,37 @@ export class AutoPilot extends EventEmitter {
           run.steps[4].detail = removed > 0 ? `${removed.toFixed(1)} s de enrolação removidos` : 'Nada para remover'
         })
 
+      // 6. Música e efeitos
+      const extrasByClip = new Map<string, AudioExtras>()
+      if (o.music === 'nenhuma' && !o.effects) this.skip(run, 'trilha', 'Desligado')
+      else
+        await this.step(run, 'trilha', signal, async () => {
+          const parts: string[] = []
+          for (const c of clips) {
+            const extras: AudioExtras = {}
+            if (o.music !== 'nenhuma' && d.pickMusic) {
+              try {
+                const m = await d.pickMusic(o.music, signal)
+                if (m) {
+                  extras.music = { file: m.file, volume: 0.22, duck: true, attribution: m.attribution }
+                  if (m.attribution) c.description = [c.description, `🎵 ${m.attribution}`].filter(Boolean).join('\n')
+                  if (!parts.includes(m.title)) parts.push(m.title)
+                }
+              } catch (err) {
+                if (signal.aborted) throw new Cancelled()
+                run.notes.push(`Sem música de fundo: ${(err as Error).message}`)
+                break
+              }
+            }
+            if (o.effects && d.pickEffect) {
+              const whoosh = d.pickEffect('whoosh')
+              if (whoosh) extras.effects = [{ file: whoosh, atSec: 0, volume: 0.35 }]
+            }
+            extrasByClip.set(c.segmentId, extras)
+          }
+          run.steps.find((s) => s.key === 'trilha')!.detail = [parts.length ? `música: ${parts.slice(0, 2).join(', ')}` : '', o.effects ? 'efeito de entrada' : ''].filter(Boolean).join(' · ') || 'nada encontrado'
+        })
+
       // Textos para redes (IA opcional; se falhar usa os locais)
       if (d.aiSocial && transcript?.cues.length) {
         for (const c of clips) {
@@ -345,7 +393,7 @@ export class AutoPilot extends EventEmitter {
           if (!text) continue
           try {
             const ai = await d.aiSocial(text, PLATFORM_LABEL[o.platform])
-            if (ai) Object.assign(c, { title: ai.title || c.title, description: ai.description, hashtags: ai.hashtags.length ? ai.hashtags : c.hashtags })
+            if (ai) Object.assign(c, { title: ai.title || c.title, description: [ai.description, c.description].filter(Boolean).join('\n'), hashtags: ai.hashtags.length ? ai.hashtags : c.hashtags })
           } catch (err) {
             run.notes.push(`IA indisponível (${(err as Error).message}); usei títulos automáticos locais.`)
             break
@@ -358,7 +406,7 @@ export class AutoPilot extends EventEmitter {
       const existing = d.getProject(project.id)?.segments ?? []
       d.updateProject(project.id, { segments: [...existing, ...segments] })
 
-      // 6. Exportar
+      // 7. Exportar
       const st = run.steps.find((s) => s.key === 'exportar')!
       st.state = 'rodando'
       st.ratio = 0
@@ -375,6 +423,7 @@ export class AutoPilot extends EventEmitter {
           presetName: PLATFORM_LABEL[o.platform],
           cues: transcript?.cues,
           sequence: c.index,
+          audioExtras: extrasByClip.get(c.segmentId),
           source: { durationSec: meta.durationSec, width: meta.video!.width, height: meta.video!.height, fps: meta.video!.fps, audioTracks: meta.audioTracks.length }
         }
         const job = d.enqueue(req)

@@ -100,7 +100,20 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
   const input = ['-ss', n3(spanStart), '-t', n3(spanEnd - spanStart), '-i', req.inputPath]
 
   const wantVideo = (o.format === 'mp4' || o.format === 'gif') && req.source.width > 0
-  const wantAudio = o.includeAudio && req.source.audioTracks > 0 && o.format !== 'gif'
+  const hasVoice = o.includeAudio && req.source.audioTracks > 0 && o.format !== 'gif'
+  const extras = o.format === 'gif' ? undefined : req.audioExtras
+  const music = extras?.music
+  const effects = (extras?.effects ?? []).filter((e) => e.atSec >= 0 && e.atSec < duration)
+  const wantAudio = hasVoice || !!music || effects.length > 0
+  // Entradas extras (depois do vídeo): música em loop e efeitos
+  const extraInputs: string[] = []
+  let nextInput = 1
+  const musicIdx = music ? nextInput++ : -1
+  if (music) extraInputs.push('-stream_loop', '-1', '-i', music.file)
+  const fxIdx = effects.map((e) => {
+    extraInputs.push('-i', e.file)
+    return nextInput++
+  })
   const trackIdx = typeof o.audioTrack === 'number' ? Math.min(Math.max(0, o.audioTrack), req.source.audioTracks - 1) : 0
 
   // Modo rápido: cópia de streams, um intervalo.
@@ -108,7 +121,7 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
     const r = req.ranges[0]
     const args = [...head, '-ss', n3(r.startSec), '-i', req.inputPath, '-t', n3(r.endSec - r.startSec)]
     args.push('-map', '0:v:0?')
-    if (wantAudio) args.push('-map', `0:a:${trackIdx}?`)
+    if (hasVoice) args.push('-map', `0:a:${trackIdx}?`)
     else args.push('-an')
     args.push('-c', 'copy', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', ...metadataArgs(req), '-sn', '-dn', outputPath)
     return { args, durationSec: duration }
@@ -116,7 +129,7 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
 
   const graph: string[] = []
   let audioSrc = `[0:a:${trackIdx}]`
-  if (wantAudio && o.audioTrack === 'mix' && req.source.audioTracks > 1) {
+  if (hasVoice && o.audioTrack === 'mix' && req.source.audioTracks > 1) {
     const ins = Array.from({ length: req.source.audioTracks }, (_, i) => `[0:a:${i}]`).join('')
     graph.push(`${ins}amix=inputs=${req.source.audioTracks}:duration=longest:normalize=0[amix]`)
     audioSrc = '[amix]'
@@ -131,12 +144,12 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
       graph.push(`[0:v:0]split=${n}${rel.map((_, i) => `[vs${i}]`).join('')}`)
       rel.forEach(([a, b], i) => graph.push(`[vs${i}]trim=start=${a}:end=${b},setpts=PTS-STARTPTS[v${i}]`))
     }
-    if (wantAudio) {
+    if (hasVoice) {
       graph.push(`${audioSrc}asplit=${n}${rel.map((_, i) => `[as${i}]`).join('')}`)
       rel.forEach(([a, b], i) => graph.push(`[as${i}]atrim=start=${a}:end=${b},asetpts=PTS-STARTPTS[a${i}]`))
     }
-    const pads = rel.map((_, i) => `${wantVideo ? `[v${i}]` : ''}${wantAudio ? `[a${i}]` : ''}`).join('')
-    graph.push(`${pads}concat=n=${n}:v=${wantVideo ? 1 : 0}:a=${wantAudio ? 1 : 0}${wantVideo ? '[vcat]' : ''}${wantAudio ? '[acat]' : ''}`)
+    const pads = rel.map((_, i) => `${wantVideo ? `[v${i}]` : ''}${hasVoice ? `[a${i}]` : ''}`).join('')
+    graph.push(`${pads}concat=n=${n}:v=${wantVideo ? 1 : 0}:a=${hasVoice ? 1 : 0}${wantVideo ? '[vcat]' : ''}${hasVoice ? '[acat]' : ''}`)
     vLabel = '[vcat]'
     aLabel = '[acat]'
   }
@@ -162,15 +175,47 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
   }
 
   if (wantAudio) {
-    const af: string[] = [...atempoChain(o.speed)]
-    if (o.fadeInSec > 0) af.push(`afade=t=in:st=0:d=${n3(o.fadeInSec)}`)
-    if (o.fadeOutSec > 0) af.push(`afade=t=out:st=${n3(Math.max(0, duration - o.fadeOutSec))}:d=${n3(o.fadeOutSec)}`)
-    if (o.normalizeAudio) af.push('loudnorm=I=-14:TP=-1.5:LRA=11')
-    af.push('aresample=48000')
-    graph.push(`${aLabel}${af.join(',')}[aout]`)
+    const fmt = 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo'
+    const layers: string[] = []
+    if (hasVoice) {
+      graph.push(`${aLabel}${[...atempoChain(o.speed), fmt].join(',')}[avoice]`)
+    }
+    if (music) {
+      const vol = Math.min(1, Math.max(0, music.volume)).toFixed(3)
+      const fadeOut = Math.min(1.5, duration / 3)
+      graph.push(
+        `[${musicIdx}:a:0]${fmt},atrim=duration=${n3(duration)},volume=${vol},afade=t=in:st=0:d=${n3(Math.min(1, duration / 4))},afade=t=out:st=${n3(Math.max(0, duration - fadeOut))}:d=${n3(fadeOut)}[mus]`
+      )
+      if (hasVoice && music.duck) {
+        // Música abaixa sozinha quando há voz (a voz é a "chave" do compressor)
+        graph.push('[avoice]asplit=2[vmain][vkey]', '[mus][vkey]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350:makeup=1[musd]')
+        layers.push('[vmain]', '[musd]')
+      } else {
+        if (hasVoice) layers.push('[avoice]')
+        layers.push('[mus]')
+      }
+    } else if (hasVoice) layers.push('[avoice]')
+    effects.forEach((e, i) => {
+      const ms = Math.round(e.atSec * 1000)
+      graph.push(`[${fxIdx[i]}:a:0]${fmt},volume=${Math.min(2, Math.max(0, e.volume)).toFixed(3)},adelay=${ms}|${ms}[fx${i}]`)
+      layers.push(`[fx${i}]`)
+    })
+    let mixed = layers[0]
+    if (layers.length > 1) {
+      // apad/atrim abaixo garantem a duração exata do corte
+      graph.push(`${layers.join('')}amix=inputs=${layers.length}:duration=longest:normalize=0:dropout_transition=0[amixed]`)
+      mixed = '[amixed]'
+    }
+    const post: string[] = [`apad=whole_dur=${n3(duration)}`, `atrim=duration=${n3(duration)}`]
+    if (o.fadeInSec > 0) post.push(`afade=t=in:st=0:d=${n3(o.fadeInSec)}`)
+    if (o.fadeOutSec > 0) post.push(`afade=t=out:st=${n3(Math.max(0, duration - o.fadeOutSec))}:d=${n3(o.fadeOutSec)}`)
+    if (o.normalizeAudio) post.push('loudnorm=I=-14:TP=-1.5:LRA=11')
+    if (layers.length > 1) post.push('alimiter=limit=0.95:level=disabled')
+    post.push('aresample=48000')
+    graph.push(`${mixed}${post.join(',')}[aout]`)
   }
 
-  const args = [...head, ...input, '-filter_complex', graph.join(';')]
+  const args = [...head, ...input, ...extraInputs, '-filter_complex', graph.join(';')]
   if (wantVideo) args.push('-map', '[vout]')
   if (wantAudio) args.push('-map', '[aout]')
   args.push('-t', n3(duration))

@@ -8,5 +8,5 @@ export function redact(text: string, home: string, username: string): string {
   if (username && username.length > 2) out = out.replace(new RegExp(username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<usuario>')
   return out
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, 'sk-ant-<removido>')
-    .replace(/("?(password|senha|apiKey|aiKeyEnc|obsPasswordEnc)"?\s*[:=]\s*)"[^"]*"/gi, '$1"<removido>"')
+    .replace(/("?(password|senha|apiKey|\w*Enc)"?\s*[:=]\s*)"[^"]*"/gi, '$1"<removido>"')
 }

@@ -17,6 +17,7 @@ interface Props {
   onRefreshTools: () => Promise<void>
   onAdjust: (projectId: string, segmentId: string) => void
   onOpenRuns: () => void
+  onOpenAccounts: () => void
 }
 
 const PLATFORMS: [AutoOptions['platform'], string, string][] = [
@@ -24,6 +25,14 @@ const PLATFORMS: [AutoOptions['platform'], string, string][] = [
   ['reels', 'Reels', '9:16'],
   ['shorts', 'Shorts', '9:16'],
   ['youtube', 'YouTube', '16:9']
+]
+const MUSIC: [AutoOptions['music'], string][] = [
+  ['nenhuma', 'Sem música'],
+  ['animada', 'Animada'],
+  ['epica', 'Épica'],
+  ['lofi', 'Lo-fi'],
+  ['calma', 'Calma'],
+  ['engracada', 'Engraçada']
 ]
 const LENGTHS: [AutoOptions['length'], string, string][] = [
   ['curto', 'Curtos', '15–35 s'],
@@ -91,6 +100,7 @@ export function Create(p: Props) {
           }}
           onAdjust={p.onAdjust}
           onEnableSubtitles={() => p.setActiveRunId(null)}
+          onOpenAccounts={p.onOpenAccounts}
         />
       </main>
     )
@@ -178,6 +188,14 @@ export function Create(p: Props) {
               </div>
             </div>
           )}
+          <div className="choices-group">
+            <span className="group-label">Música de fundo</span>
+            <div className="choices">
+              {MUSIC.map(([v, t]) => (
+                <Choice key={v} value={v} current={opts.music} onPick={(music) => set({ music })} title={t} />
+              ))}
+            </div>
+          </div>
           <div className="toggles">
             <label className={`switch ${!subtitlesReady ? 'disabled' : ''}`} title={subtitlesReady ? '' : 'Ative as legendas automáticas acima'}>
               <input type="checkbox" checked={opts.subtitles && subtitlesReady} disabled={!subtitlesReady} onChange={(e) => set({ subtitles: e.target.checked })} />
@@ -186,6 +204,10 @@ export function Create(p: Props) {
             <label className={`switch ${!subtitlesReady ? 'disabled' : ''}`}>
               <input type="checkbox" checked={opts.cleanSpeech && subtitlesReady} disabled={!subtitlesReady} onChange={(e) => set({ cleanSpeech: e.target.checked })} />
               <span>Tirar “éé”, “hum” e pausas</span>
+            </label>
+            <label className="switch">
+              <input type="checkbox" checked={opts.effects} onChange={(e) => set({ effects: e.target.checked })} />
+              <span>Efeito sonoro de entrada</span>
             </label>
           </div>
           <button className="cta" onClick={generate}>

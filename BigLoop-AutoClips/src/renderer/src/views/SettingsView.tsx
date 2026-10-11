@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, ObsStatus, ToolStatus, WatchStatus } from '@shared/types'
 import { SetupCard } from '../components/SetupCard'
+import { TikTokAccount } from '../components/TikTokAccount'
 import { Field, Toggle, useToast } from '../lib/ui'
 
 interface Props {
@@ -16,6 +17,7 @@ interface Props {
 
 const SECTIONS = [
   ['geral', 'Geral'],
+  ['contas', 'Contas (TikTok)'],
   ['ffmpeg', 'FFmpeg'],
   ['transcricao', 'Transcrição'],
   ['monitoramento', 'Monitoramento'],
@@ -92,6 +94,11 @@ export default function SettingsView(p: Props) {
           <Toggle checked={s.lowPriority} onChange={(v) => p.onSettings({ lowPriority: v })} label="Prioridade baixa para o FFmpeg" hint="Não trava jogos nem a gravação enquanto exporta." />
           <Toggle checked={s.notifyOnDone} onChange={(v) => p.onSettings({ notifyOnDone: v })} label="Avisar quando um corte terminar" />
           <Toggle checked={s.minimizeToTray} onChange={(v) => p.onSettings({ minimizeToTray: v })} label="Fechar a janela mantém o app na bandeja" hint="A fila e o monitoramento continuam rodando em segundo plano." />
+        </section>
+
+        <section className="card" ref={sec('contas')}>
+          <h2>Contas — TikTok</h2>
+          <TikTokAccount settings={s} onSettings={p.onSettings} />
         </section>
 
         <section className="card" ref={sec('ffmpeg')}>

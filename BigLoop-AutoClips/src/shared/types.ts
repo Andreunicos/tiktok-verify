@@ -136,6 +136,21 @@ export interface CutRequest {
   source: { durationSec: number; width: number; height: number; fps: number | null; audioTracks: number }
   /** Número sequencial para {n} no modelo de nome. */
   sequence?: number
+  /** Música de fundo e efeitos sonoros (tempos no corte final). */
+  audioExtras?: AudioExtras
+}
+
+export interface AudioExtras {
+  music?: {
+    file: string
+    /** 0..1 em relação ao volume original da música (0,15–0,25 costuma ficar bom sob voz). */
+    volume: number
+    /** Abaixa a música quando há fala (sidechain). */
+    duck: boolean
+    /** Crédito exigido pela licença, para os textos do post. */
+    attribution?: string | null
+  }
+  effects?: { file: string; atSec: number; volume: number }[]
 }
 
 export interface CutProgress {
@@ -292,6 +307,15 @@ export interface AppSettings {
   auto: AutoOptions
   /** Gerar cortes sozinho quando chega gravação nova (OBS ou pasta). */
   autoOnNewRecording: boolean
+  // TikTok (app do próprio usuário no developers.tiktok.com)
+  tiktokClientKey: string
+  tiktokClientSecretEnc: string
+  tiktokTokensEnc: string
+  tiktokRedirectUri: string
+  tiktokCallbackPort: number
+  tiktokDisplayName: string
+  /** Enviar sozinho para os rascunhos do TikTok quando os cortes ficarem prontos. */
+  tiktokAutoDrafts: boolean
 }
 
 export interface ToolInfo {
@@ -334,6 +358,45 @@ export interface AppInfo {
   logPath: string
 }
 
+// ───────────── Biblioteca de sons ─────────────
+export type SoundKind = 'musica' | 'efeito'
+export type Mood = 'animada' | 'calma' | 'epica' | 'lofi' | 'engracada'
+
+export interface SoundItem {
+  id: string
+  kind: SoundKind
+  title: string
+  file: string
+  durationSec: number
+  mood: Mood | null
+  tags: string[]
+  /** Ex.: "CC0", "PDM", "CC BY 4.0", "Gerado pelo app (CC0)", "Arquivo próprio". */
+  license: string
+  licenseUrl: string | null
+  creator: string | null
+  sourceUrl: string | null
+  /** Texto de crédito exigido pela licença (vazio para CC0/domínio público). */
+  attribution: string | null
+  origin: 'gerado' | 'openverse' | 'importado'
+  addedAt: number
+}
+
+export interface OpenverseResult {
+  id: string
+  title: string
+  creator: string | null
+  license: string
+  licenseVersion: string | null
+  licenseUrl: string | null
+  url: string
+  landingUrl: string | null
+  durationSec: number | null
+  filetype: string | null
+  attribution: string | null
+  tags: string[]
+  provider: string | null
+}
+
 // ───────────── Piloto automático (2 cliques) ─────────────
 export type AutoPlatform = 'tiktok' | 'reels' | 'shorts' | 'youtube'
 export type AutoLength = 'curto' | 'medio' | 'longo'
@@ -348,9 +411,13 @@ export interface AutoOptions {
   cleanSpeech: boolean
   /** blur = vídeo inteiro com fundo desfocado; crop = preenche a tela cortando as laterais. */
   framing: 'blur' | 'crop'
+  /** Música de fundo pelo clima, ou nenhuma. */
+  music: Mood | 'nenhuma'
+  /** Efeito de entrada (whoosh). */
+  effects: boolean
 }
 
-export type AutoStepKey = 'ler' | 'analisar' | 'transcrever' | 'escolher' | 'limpar' | 'exportar'
+export type AutoStepKey = 'ler' | 'analisar' | 'transcrever' | 'escolher' | 'limpar' | 'trilha' | 'exportar'
 
 export interface AutoStep {
   key: AutoStepKey
@@ -377,6 +444,54 @@ export interface AutoClip {
   outputPath?: string
   thumbnail?: string
   error?: string
+  posts?: ClipPost[]
+}
+
+export interface ClipPost {
+  platform: 'tiktok'
+  mode: 'rascunho' | 'direto'
+  status: 'enviando' | 'processando' | 'enviado' | 'publicado' | 'erro'
+  progress?: number
+  error?: string
+  publishId?: string
+  at: number
+}
+
+export interface TikTokStatus {
+  configured: boolean
+  connected: boolean
+  displayName: string | null
+  avatarUrl: string | null
+  redirectUri: string
+  autoDrafts: boolean
+}
+
+export interface TikTokCreator {
+  username: string
+  nickname: string
+  avatarUrl: string | null
+  privacyOptions: string[]
+  commentDisabled: boolean
+  duetDisabled: boolean
+  stitchDisabled: boolean
+  maxDurationSec: number
+}
+
+export interface TikTokPostRequest {
+  file: string
+  mode: 'rascunho' | 'direto'
+  /** Para associar ao corte no histórico (opcional). */
+  runId?: string
+  segmentId?: string
+  post?: {
+    title: string
+    privacyLevel: string
+    disableComment: boolean
+    disableDuet: boolean
+    disableStitch: boolean
+    brandContent: boolean
+    brandOrganic: boolean
+  }
 }
 
 export interface AutoRun {

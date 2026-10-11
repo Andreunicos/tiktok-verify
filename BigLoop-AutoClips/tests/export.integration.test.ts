@@ -131,6 +131,38 @@ describe.skipIf(!ffmpeg || !ffprobe)('Exportação com FFmpeg real', () => {
     }
   })
 
+  it('música de fundo abaixa quando há voz (ducking) e efeito entra no tempo certo', async () => {
+    const voiced = join(dir, 'voz-alternada.mp4')
+    makeVideo(ffmpeg!, voiced, 8, { silenceEvery: 2 }) // voz 440 Hz: 0–2 s, silêncio 2–4 s, …
+    const music = join(dir, 'musica-220.wav')
+    spawnSync(ffmpeg!, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=220:sample_rate=48000:duration=3', music])
+    const fx = join(dir, 'fx-1000.wav')
+    spawnSync(ffmpeg!, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=48000:duration=0.3', fx])
+    const { outputPath, meta } = await exportOk(
+      make(
+        { fadeInSec: 0, fadeOutSec: 0 },
+        {
+          inputPath: voiced,
+          ranges: [{ startSec: 0, endSec: 8 }],
+          outputDir: join(dir, 'musica'),
+          audioExtras: { music: { file: music, volume: 0.5, duck: true }, effects: [{ file: fx, atSec: 5, volume: 1 }] }
+        }
+      )
+    )
+    expect(Math.abs(meta.durationSec - 8)).toBeLessThan(0.1)
+    // nível RMS (dB) de uma faixa de frequência num trecho
+    const band = (f: number, from: number, to: number) => {
+      const r = spawnSync(ffmpeg!, ['-hide_banner', '-ss', String(from), '-t', String(to - from), '-i', outputPath, '-af', `bandpass=f=${f}:width_type=h:w=60,astats=metadata=0:measure_overall=RMS_level`, '-f', 'null', '-'])
+      const m = /RMS level dB:\s*(-?[\d.]+|-inf)/.exec(r.stderr.toString())
+      return m ? (m[1] === '-inf' ? -120 : Number(m[1])) : NaN
+    }
+    const musicWithVoice = band(220, 0.6, 1.6)
+    const musicAlone = band(220, 2.6, 3.6) // loop da música (3 s) continua depois de acabar
+    expect(musicAlone - musicWithVoice).toBeGreaterThan(6)
+    expect(band(1000, 5.0, 5.3)).toBeGreaterThan(band(1000, 6.5, 7.5) + 20)
+    expect(band(220, 6.6, 7.4)).toBeGreaterThan(-60) // música em loop até o fim
+  })
+
   it('respeita limite de tamanho', async () => {
     makeVideo(ffmpeg!, join(dir, 'grande.mp4'), 6, { size: '1280x720' })
     const { outputPath } = await exportOk(

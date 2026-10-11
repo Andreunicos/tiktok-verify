@@ -34,8 +34,15 @@ export function defaultSettings(paths: { outputDir: string }): AppSettings {
     aiModel: '',
     onboardingDone: false,
     autoUpdate: true,
-    auto: { platform: 'tiktok', count: 5, length: 'medio', subtitles: true, cleanSpeech: true, framing: 'blur' },
-    autoOnNewRecording: false
+    auto: { platform: 'tiktok', count: 5, length: 'medio', subtitles: true, cleanSpeech: true, framing: 'blur', music: 'animada', effects: true },
+    autoOnNewRecording: false,
+    tiktokClientKey: '',
+    tiktokClientSecretEnc: '',
+    tiktokTokensEnc: '',
+    tiktokRedirectUri: 'https://andreunicos.github.io/tiktok-verify/tiktok-callback.html',
+    tiktokCallbackPort: 53682,
+    tiktokDisplayName: '',
+    tiktokAutoDrafts: false
   }
 }
 

@@ -32,7 +32,7 @@ function makeLive(path: string) {
   if (r.status !== 0) throw new Error(r.stderr.toString())
 }
 
-function setup(withWhisper: boolean) {
+function setup(withWhisper: boolean, sound?: { music: string; fx: string; attribution?: string | null; fail?: boolean }) {
   const projects = new ProjectStore(join(dir, 'projetos'))
   const outDir = join(dir, withWhisper ? 'cortes-com-legenda' : 'cortes')
   const queue = new JobQueue(null, (job, report) => startExport(job.request, { ffmpegPath: ffmpeg!, onProgress: (_s, r, e) => report(r, e) }), { concurrency: 2 })
@@ -48,6 +48,13 @@ function setup(withWhisper: boolean) {
       withWhisper
         ? (path, signal, onProgress) => transcribe(path, { ffmpegPath: ffmpeg!, whisperPath: fakeWhisper, modelPath: fakeWhisper, language: 'pt', threads: 2, signal, onProgress: (_s, r) => onProgress(r) })
         : null,
+    pickMusic: sound
+      ? async () => {
+          if (sound.fail) throw new Error('sem internet')
+          return { file: sound.music, title: 'Trilha Teste', attribution: sound.attribution ?? null }
+        }
+      : undefined,
+    pickEffect: sound ? () => sound.fx : undefined,
     enqueue: (req) => queue.add(req),
     cancelJob: (id) => queue.cancel(id),
     getJob: (id) => queue.state().jobs.find((j) => j.id === id),
@@ -80,7 +87,7 @@ function waitDone(pilot: AutoPilot, id: string, timeoutMs = 120_000): Promise<Au
   })
 }
 
-const opts = (o: Partial<AutoOptions> = {}): AutoOptions => ({ platform: 'tiktok', count: 3, length: 'curto', subtitles: true, cleanSpeech: true, framing: 'blur', ...o })
+const opts = (o: Partial<AutoOptions> = {}): AutoOptions => ({ platform: 'tiktok', count: 3, length: 'curto', subtitles: true, cleanSpeech: true, framing: 'blur', music: 'nenhuma', effects: false, ...o })
 const probeJson = (p: string) => JSON.parse(spawnSync(ffprobe!, ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', p]).stdout.toString())
 
 describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo automático de ponta a ponta (FFmpeg real)', () => {
@@ -97,7 +104,7 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     const run = pilot.start(live, opts())
     const done = await waitDone(pilot, run.id)
     expect(done.state).toBe('concluído')
-    expect(done.steps.map((s) => `${s.key}:${s.state}`)).toEqual(['ler:ok', 'analisar:ok', 'transcrever:pulado', 'escolher:ok', 'limpar:pulado', 'exportar:ok'])
+    expect(done.steps.map((s) => `${s.key}:${s.state}`)).toEqual(['ler:ok', 'analisar:ok', 'transcrever:pulado', 'escolher:ok', 'limpar:pulado', 'trilha:pulado', 'exportar:ok'])
     expect(done.clips).toHaveLength(3)
     expect(done.notes.join(' ')).toMatch(/sem legenda/)
     const folder = join(outDir, 'minha live')
@@ -128,6 +135,30 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     expect(done.steps.find((s) => s.key === 'analisar')!.detail).toBe('Já analisado antes')
     expect(projects.get(done.projectId)!.transcript!.cues.length).toBeGreaterThan(0)
     expect(readdirSync(join(outDir, 'minha live')).filter((f) => f.endsWith('.mp4'))).toHaveLength(2)
+  })
+
+  it('música e efeito entram nos cortes e o crédito vai para o texto', async () => {
+    const music = join(dir, 'trilha.wav')
+    const fx = join(dir, 'whoosh.wav')
+    spawnSync(ffmpeg!, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=5', music])
+    spawnSync(ffmpeg!, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'anoisesrc=d=0.5', fx])
+    const { pilot } = setup(false, { music, fx, attribution: '"Trilha Teste" por Fulano — CC BY 4.0' })
+    const done = await waitDone(pilot, pilot.start(live, opts({ count: 1, music: 'animada', effects: true })).id)
+    expect(done.state).toBe('concluído')
+    const st = done.steps.find((s) => s.key === 'trilha')!
+    expect(st.state).toBe('ok')
+    expect(st.detail).toMatch(/Trilha Teste/)
+    expect(done.clips[0].description).toMatch(/CC BY 4\.0/)
+    expect(readFileSync(done.textsFile!, 'utf8')).toMatch(/Fulano/)
+    // tem áudio no corte (voz + música)
+    expect(probeJson(done.clips[0].outputPath!).streams.some((s: { codec_type: string }) => s.codec_type === 'audio')).toBe(true)
+  })
+
+  it('sem internet para música: avisa e continua', async () => {
+    const { pilot } = setup(false, { music: '', fx: '', fail: true })
+    const done = await waitDone(pilot, pilot.start(live, opts({ count: 1, music: 'calma', effects: false })).id)
+    expect(done.state).toBe('concluído')
+    expect(done.notes.join(' ')).toMatch(/Sem música de fundo: sem internet/)
   })
 
   it('cancelar para tudo', async () => {

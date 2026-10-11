@@ -83,6 +83,19 @@ describe('buildExportArgs', () => {
     expect(gif).not.toContain('[aout]')
   })
 
+  it('música e efeitos viram entradas extras e mixagem', () => {
+    const r = req({ audioExtras: { music: { file: '/m.mp3', volume: 0.2, duck: true }, effects: [{ file: '/fx.wav', atSec: 1, volume: 0.8 }, { file: '/fora.wav', atSec: 99, volume: 1 }] } })
+    const { args } = buildExportArgs(r, 'o.mp4')
+    expect(args.join(' ')).toContain('-stream_loop -1 -i /m.mp3 -i /fx.wav')
+    expect(args).not.toContain('/fora.wav')
+    const g = graphOf(args)
+    expect(g).toContain('sidechaincompress')
+    expect(g).toContain('adelay=1000|1000')
+    expect(g).toContain('amix=inputs=3')
+    expect(g).toContain('alimiter')
+    expect(fastModeBlocker({ ...r, options: { ...r.options, mode: 'fast' } })).toMatch(/música/)
+  })
+
   it('limite de tamanho vira bitrate', () => {
     const { args } = buildExportArgs(req({}, { maxSizeMB: 8 }), 'o.mp4')
     expect(args).toContain('-b:v')

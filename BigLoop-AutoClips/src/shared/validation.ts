@@ -25,7 +25,7 @@ export function validateRanges(ranges: Range[], durationSec: number): string | n
 }
 
 /** Motivo pelo qual o modo rápido (cópia de stream) não pode ser usado, ou null se pode. */
-export function fastModeBlocker(req: Pick<CutRequest, 'ranges' | 'options'>): string | null {
+export function fastModeBlocker(req: Pick<CutRequest, 'ranges' | 'options'> & Partial<Pick<CutRequest, 'audioExtras'>>): string | null {
   const o = req.options
   if (o.format !== 'mp4') return 'O modo rápido só gera MP4.'
   if (req.ranges.length !== 1) return 'O modo rápido não une vários intervalos.'
@@ -36,6 +36,7 @@ export function fastModeBlocker(req: Pick<CutRequest, 'ranges' | 'options'>): st
   if (o.subtitles === 'burn' || o.subtitles === 'both') return 'O modo rápido não grava legendas no vídeo.'
   if (o.audioTrack === 'mix') return 'O modo rápido não mistura faixas de áudio.'
   if (o.maxSizeMB) return 'O modo rápido não controla o tamanho do arquivo.'
+  if (req.audioExtras?.music || req.audioExtras?.effects?.length) return 'O modo rápido não coloca música nem efeitos.'
   return null
 }
 
@@ -48,9 +49,10 @@ export function validateRequest(req: CutRequest): string | null {
   const total = req.ranges.reduce((s, r) => s + r.endSec - r.startSec, 0) / o.speed
   if (o.fadeInSec + o.fadeOutSec > total) return 'Os fades somados são maiores que o corte.'
   if (o.maxSizeMB !== null && !(o.maxSizeMB > 0)) return 'O limite de tamanho precisa ser positivo.'
-  if ((o.format === 'mp3' || o.format === 'wav') && req.source.audioTracks === 0) return 'O vídeo não tem áudio para exportar.'
+  const hasExtras = !!req.audioExtras?.music || !!req.audioExtras?.effects?.length
+  if ((o.format === 'mp3' || o.format === 'wav') && req.source.audioTracks === 0 && !hasExtras) return 'O vídeo não tem áudio para exportar.'
   if (o.format === 'mp3' || o.format === 'wav') {
-    if (!o.includeAudio) return 'Exportar só áudio requer "Incluir áudio".'
+    if (!o.includeAudio && !hasExtras) return 'Exportar só áudio requer "Incluir áudio".'
   } else if (req.source.width === 0) {
     if (o.format === 'gif') return 'O arquivo não tem vídeo para gerar GIF.'
     return 'O arquivo não tem vídeo. Exporte como MP3 ou WAV.'

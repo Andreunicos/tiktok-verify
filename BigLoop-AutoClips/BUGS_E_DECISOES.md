@@ -28,6 +28,11 @@
 | 2026-10-10 | Limpeza de “éé/pausas” só corta pausa que também é **silêncio no áudio** e é desfeita se tirar mais de 25% do corte | Em gameplay, sem voz não significa sem ação; o teste mostrou um corte de 18 s virando 3 s |
 | 2026-10-10 | FFmpeg grava em pasta temporária do app e o arquivo é movido no fim; teste de escrita antes; troca automática da pasta Vídeos bloqueada para `%USERPROFILE%\BigLoop AutoClips` | Erro real do usuário: “Error opening output … No such file or directory” na pasta Vídeos (provável “Acesso controlado a pastas”) |
 | 2026-10-10 | Instalação do whisper.cpp/modelo/FFmpeg pelo próprio app (GitHub, Hugging Face, gyan.dev), com SHA-256 do modelo conferido quando o servidor informa | Legendas e FFmpeg em 1 clique, sem o usuário caçar arquivos |
+| 2026-10-11 | Música/efeitos via **Openverse** (sem chave) filtrando `license=cc0,pdm` + `license_type=commercial`; CC BY só se o usuário marcar, com crédito automático | Uso comercial nas redes sem risco de direitos e sem obrigação de crédito por padrão |
+| 2026-10-11 | Pacote de efeitos **sintetizado pelo app** com FFmpeg (não baixado) | Funciona offline e não tem direitos de terceiros |
+| 2026-10-11 | Música com `sidechaincompress` (voz como chave), volume 0,22, fades e `alimiter` | Música não atrapalha a fala; medido: ≥ 6 dB mais baixa sob voz |
+| 2026-10-11 | TikTok: OAuth do **app do próprio usuário** (PKCE, porta local 53682, página de retorno no GitHub Pages) | Não embutir segredo de terceiros no app; o TikTok exige redirect https cadastrado |
+| 2026-10-11 | Automático = **rascunhos** (inbox); publicação direta só com tela de consentimento a cada post | Regras de UX da Content Posting API do TikTok e a regra do guia de não publicar sem confirmação |
 | 2026-10-10 | Sem publicação automática de vídeos, sem apagar originais, sem importar VODs de terceiros | Regra do guia + termos de uso/direitos |
 
 ## Limitações conhecidas
@@ -43,6 +48,10 @@
   não passam pelo SmartScreen, mas também não têm verificação de assinatura (só o checksum SHA-512 do
   `latest.yml`). Um certificado de assinatura de código resolveria.
 - Toda versão publicada fica pública na página de Releases (o repositório é público).
+- **TikTok, Openverse e downloads não foram testados contra os serviços reais** (rede bloqueada neste ambiente);
+  testados com servidores simulados que seguem a documentação. Pontos a confirmar no PC do usuário:
+  formato do PKCE do TikTok para desktop (implementado com SHA-256 em hexadecimal, como na documentação do Login
+  Kit para desktop) e se o redirect pelo GitHub Pages está publicado.
 - `npm audit` aponta avisos em dependências de **desenvolvimento** (vitest/tinypool, electron-builder);
   não vão para o app instalado. Atualizar o vitest para 4.x resolve parte — pendente.
 
@@ -65,10 +74,11 @@ Nenhum outro bug aberto conhecido. Corrigidos durante o desenvolvimento (achados
 | Comando | Resultado real |
 |---|---|
 | `npm run typecheck` | sem erros |
-| `npm test` | 15 arquivos, **149 testes, todos passaram** (~45 s; inclui exportações reais com FFmpeg) |
+| `npm test` | 18 arquivos, **175 testes, todos passaram** (~45 s; inclui exportações reais com FFmpeg) |
 | `npm run build` | build concluído; Fila/Configurações/Sobre em chunks separados |
 | `xvfb-run -a node tests/e2e/app.e2e.mjs` | **passou**, sem erros no console: importar → analisar (10 pausas, 1 cena) → aprovar sugestão → transcrever (whisper simulado) → buscar → trecho por teclado → exportar 2 cortes TikTok 9:16 com legenda e capa (FFprobe confirmou 1080×1920 + áudio) → XML e EDL → apagar e desfazer → OBS simulado (conectar, marcador em 11 s, importar ao parar) → pasta monitorada → configurações, tema, sobre, diagnóstico |
 | Teste real de atualização (AppImage Linux, servidor local no lugar do GitHub) | app **0.3.1** abriu → em 4 s achou a 0.3.2 → baixou (checksum ok) → contagem de 10 s → `quitAndInstall` → arquivo instalado passou a ser a 0.3.2 (SHA-256 igual ao publicado) → reaberto, registrou “0.3.2 iniciado” e “não há atualização”. A reabertura automática não ocorreu só porque o container não tem FUSE |
 | GitHub Actions — CI (Linux + Windows) | passou: typecheck, 136 testes no Linux e no Windows, E2E no Linux |
 | GitHub Actions — publicação | v0.3.3 publicada com `BigLoop-AutoClips-Setup-0.3.3.exe`, `.blockmap` e `latest.yml`; `releases/latest/download/latest.yml` responde `version: 0.3.3` |
 | E2E do modo automático (Electron, Xvfb) | 2 cliques (escolher vídeo → Gerar cortes) → 3 cortes 1080×1920 com áudio, capas e `textos para postar.txt`; com whisper simulado a transcrição entra e as legendas são gravadas; OBS simulado ao parar de gravar dispara a geração sozinha (`origin: obs`, marcador preservado) |
+| E2E de sons e TikTok (Openverse e TikTok simulados) | efeitos gerados aparecem; busca “calm” → adicionar à biblioteca (clima Calma); 2 cliques com música Calma + efeito → etapa “Colocando música e efeitos” cita a faixa; Configurações → Contas: salvar app, Conectar (retorno local) → “Conectado como André Teste”; corte → Rascunho (arquivo inteiro recebido) → Postar: botão bloqueado até escolher privacidade; post SELF_ONLY com interações desligadas |

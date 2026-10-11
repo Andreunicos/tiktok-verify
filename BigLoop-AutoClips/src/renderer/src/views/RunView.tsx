@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { PostModal } from '../components/PostModal'
 import { formatTimecode } from '@shared/time'
 import type { AutoClip, AutoRun } from '@shared/types'
-import { Modal, Progress, useToast } from '../lib/ui'
+import { Modal, newId, Progress, useToast } from '../lib/ui'
 
 interface Props {
   run: AutoRun
@@ -9,16 +10,27 @@ interface Props {
   onRetry: (run: AutoRun) => void
   onAdjust: (projectId: string, segmentId: string) => void
   onEnableSubtitles: () => void
+  onOpenAccounts: () => void
 }
 
 const PLATFORM = { tiktok: 'TikTok', reels: 'Reels', shorts: 'Shorts', youtube: 'YouTube' } as const
 const ICON = { pendente: '○', rodando: '◌', ok: '✓', pulado: '–', erro: '✕' } as const
 const clipText = (c: AutoClip) => [c.title, c.description, c.hashtags.join(' ')].filter(Boolean).join('\n\n')
 
-export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles }: Props) {
+export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOpenAccounts }: Props) {
   const toast = useToast()
   const api = window.bigloop
   const [preview, setPreview] = useState<AutoClip | null>(null)
+  const [posting, setPosting] = useState<AutoClip | null>(null)
+  const [tiktokOn, setTiktokOn] = useState(false)
+  useEffect(() => {
+    void api.tiktokStatus().then((s) => setTiktokOn(s.connected))
+  }, [])
+  const toDrafts = async (c: AutoClip) => {
+    const res = await api.tiktokSend({ file: c.outputPath!, mode: 'rascunho', runId: run.id, segmentId: c.segmentId }, newId())
+    if (!res.ok) toast(res.error, 'erro')
+    else toast('Enviado para os rascunhos do TikTok. Abra a Caixa de entrada no app do celular para postar.', 'ok')
+  }
   const ready = run.clips.filter((c) => c.status === 'concluído')
   const overall =
     run.state === 'concluído'
@@ -70,6 +82,19 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles }: Pr
               </button>
             )}
             <button onClick={() => copy(ready.map((c) => `${c.index}. ${clipText(c)}`).join('\n\n———\n\n'))}>Copiar todos os textos</button>
+            {tiktokOn ? (
+              <button
+                onClick={async () => {
+                  for (const c of ready.filter((x) => !(x.posts ?? []).some((p) => p.platform === 'tiktok' && p.status !== 'erro'))) await toDrafts(c)
+                }}
+              >
+                📲 Todos para os rascunhos do TikTok
+              </button>
+            ) : (
+              <button className="ghost" onClick={onOpenAccounts}>
+                Conectar TikTok
+              </button>
+            )}
             <button className="ghost" onClick={onNew}>
               + Criar mais cortes
             </button>
@@ -145,6 +170,12 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles }: Pr
                   )}
                   <p className="muted small hashtags">{c.hashtags.join(' ')}</p>
                   {c.error && <p className="error small">{c.error}</p>}
+                  {(c.posts ?? []).map((p) => (
+                    <p key={p.at} className={`small post-status ${p.status}`}>
+                      TikTok {p.mode === 'rascunho' ? 'rascunho' : 'post'}:{' '}
+                      {p.status === 'enviando' ? `enviando ${Math.round((p.progress ?? 0) * 100)}%` : p.status === 'processando' ? 'processando no TikTok…' : p.status === 'enviado' ? '✓ nos rascunhos' : p.status === 'publicado' ? '✓ publicado' : `erro — ${p.error}`}
+                    </p>
+                  ))}
                   <div className="row wrap">
                     <button className="small" onClick={() => copy(clipText(c))}>
                       Copiar texto
@@ -153,6 +184,16 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles }: Pr
                       <button className="small" onClick={() => api.showInFolder(c.outputPath!)}>
                         Mostrar
                       </button>
+                    )}
+                    {tiktokOn && c.outputPath && (
+                      <>
+                        <button className="small" onClick={() => toDrafts(c)} title="Vai para a Caixa de entrada do app TikTok">
+                          📲 Rascunho
+                        </button>
+                        <button className="small primary" onClick={() => setPosting(c)}>
+                          Postar
+                        </button>
+                      </>
                     )}
                     <button className="ghost small" onClick={() => onAdjust(run.projectId, c.segmentId)} title="Ajustar início e fim no editor avançado">
                       Ajustar
@@ -165,6 +206,7 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles }: Pr
         </section>
       )}
 
+      {posting && <PostModal clip={posting} runId={run.id} onClose={() => setPosting(null)} />}
       {preview && (
         <Modal title={`${preview.index}. ${preview.title}`} onClose={() => setPreview(null)} wide>
           <div className="preview-wrap">

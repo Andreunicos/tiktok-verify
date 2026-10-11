@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BigLoop AutoClips — conectando ao TikTok</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #111318; color: #e8eaf0; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+  main { text-align: center; max-width: 520px; padding: 24px; }
+  a { color: #a28bff; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Conectando ao BigLoop AutoClips…</h1>
+  <p id="msg">Voltando para o app no seu computador.</p>
+</main>
+<script>
+  // Página de retorno do login do TikTok. Não guarda nada: só repassa ?code&state para o app,
+  // que está esperando em http://127.0.0.1:<porta>/callback no próprio computador.
+  (function () {
+    var q = new URLSearchParams(location.search)
+    var state = q.get('state') || ''
+    var port = parseInt((state.split('.')[1] || '53682'), 10)
+    if (!(port >= 1024 && port <= 65535)) port = 53682
+    var target = 'http://127.0.0.1:' + port + '/callback' + location.search
+    document.getElementById('msg').innerHTML = 'Se nada acontecer, <a href="' + target.replace(/"/g, '') + '">clique aqui</a>. O BigLoop AutoClips precisa estar aberto.'
+    location.replace(target)
+  })()
+</script>
+</body>
+</html>

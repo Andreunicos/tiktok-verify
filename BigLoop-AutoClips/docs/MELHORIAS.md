@@ -124,7 +124,7 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 | 87 | Premiere | 🟡 gera FCP XML (Arquivo → Importar); XML validado, **não importado num Premiere real** |
 | 88 | DaVinci (EDL) | 🟡 EDL CMX3600 gerada; não testada no DaVinci |
 | 89 | Importar VOD da Twitch/YouTube | ❌ não feito (termos de uso e direitos autorais) |
-| 90 | Publicar no TikTok | ❌ não feito: exige app aprovado no TikTok e login OAuth; o guia proíbe publicar sem confirmação |
+| 90 | Publicar no TikTok | 🟡 conexão com o app do usuário, rascunhos (manual ou automático) e postagem com confirmação; testado com API simulada |
 
 ## Qualidade, segurança e distribuição
 | # | Item | Status |
@@ -140,4 +140,6 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 | 99 | Interface carregada em partes | ✅ telas de Fila, Configurações e Sobre carregam sob demanda |
 | 100 | Tela Sobre | ✅ |
 
-**Resumo:** 70 ✅ · 21 🟡 · 9 ❌
+**Resumo:** 70 ✅ · 22 🟡 · 8 ❌
+
+Extras fora da lista original: biblioteca de sons (Openverse + efeitos gerados), música com ducking, efeitos sonoros.

@@ -23,6 +23,23 @@ tamanho, enquadramento) já vêm marcadas com as últimas usadas.
 - **Gravações do OBS**: em Configurações → Monitoramento, “Gerar os cortes sozinho quando chegar gravação nova”.
 - Quer ajustar à mão? “Ajustar” em cada corte abre o **Editor avançado**.
 
+## Música, efeitos e TikTok
+
+- **Sons** (menu): busca músicas e efeitos no **Openverse** (catálogo aberto que reúne Freesound, Jamendo,
+  Wikimedia e outros) filtrando só licenças livres para uso comercial (CC0 e domínio público; CC BY opcional,
+  com crédito automático no texto do post). Também importa arquivos seus. Vem com um pacote de **efeitos gerados
+  pelo próprio app** (whoosh, pop, ding, impacto, riser, clique, notificação, buzina) — livres (CC0).
+- No **Criar cortes**: escolha o clima da música (Animada, Épica, Lo-fi, Calma, Engraçada). A música
+  **abaixa sozinha quando alguém fala** (ducking) e entra/sai com fade; opção de efeito sonoro de entrada.
+  Se a biblioteca não tiver música do clima, o app baixa algumas do Openverse na hora.
+- **TikTok** (Configurações → Contas): conecte com o **seu app** do developers.tiktok.com (Client Key/Secret).
+  - **Rascunhos**: manda o corte para a Caixa de entrada do app TikTok; você revisa e posta no celular. Pode
+    ser **automático** quando os cortes ficam prontos.
+  - **Postar**: publicação direta com a tela de confirmação exigida pelo TikTok (conta, quem pode ver, interações,
+    divulgação comercial, consentimento). Até o TikTok auditar o seu app, só posta como “Somente eu”.
+  - O login volta pela página `tiktok-callback.html` (GitHub Pages do repositório), que precisa estar
+    publicada na branch principal.
+
 ## O que faz (completo)
 
 - **Importar** por botão, Ctrl+O ou arrastar; **biblioteca** com os projetos e trechos salvos.
@@ -73,7 +90,7 @@ npm run dev
 |---|---|
 | `npm run dev` | App em modo desenvolvimento |
 | `npm run typecheck` | Verificação de tipos (main/preload e interface) |
-| `npm test` | 149 testes (Vitest), incluindo exportações reais com FFmpeg |
+| `npm test` | 175 testes (Vitest), incluindo exportações reais com FFmpeg |
 | `npm run test:e2e` | Abre o app Electron e percorre o fluxo completo (no Linux sem tela: `xvfb-run -a npm run test:e2e`) |
 | `npm run build` | Build de produção em `out/` |
 | `npm run dist:win` | Instalador NSIS local, sem publicar (rodar no Windows) |

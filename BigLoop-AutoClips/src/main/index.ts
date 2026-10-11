@@ -23,9 +23,12 @@ import { buildEdl, buildFcpXml } from '../shared/interchange'
 import { IPC } from '../shared/ipc'
 import { formatSrt, formatVtt, parseSubtitles } from '../shared/subtitles'
 import { learnWeights, suggestClips } from '../shared/suggest'
-import type { AppSettings, AutoRun, CutRequest, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
+import type { AppSettings, AutoRun, ClipPost, CutRequest, TikTokPostRequest, TikTokStatus, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
 import { autoUpdater } from 'electron-updater'
 import { AutoPilot } from './autopilot'
+import { downloadToLibrary, MOOD_QUERY, searchOpenverse } from './openverse'
+import { SoundLibrary } from './sounds'
+import { buildAuthUrl, createPkce, exchangeCode, TIKTOK, TikTokSession, waitForAuthCode, type TikTokAppConfig, type TikTokTokens } from './tiktok'
 import { installFfmpeg, installWhisper } from './installer'
 import { AiError, generateSocialCopy, translateCues } from './ai'
 import { redact } from './diagnostics'
@@ -60,6 +63,8 @@ let quitting = false
 let hwEncoders: VideoEncoder[] | null = null
 let updates: UpdateController
 let autopilot: AutoPilot
+let sounds: SoundLibrary
+let tiktok: TikTokSession
 const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
 const tasks = new Map<string, AbortController>()
 const watchState: WatchStatus = { enabled: false, dir: '', pending: [], lastImported: null, error: null }
@@ -449,6 +454,26 @@ function setupAutopilot(): void {
         if (!s.aiEnabled || !s.aiKeyEnc) return null
         return generateSocialCopy(decryptSecret(s.aiKeyEnc), s.aiModel, text, platform)
       },
+      pickMusic: async (mood, signal) => {
+        let item = sounds.pick('musica', mood)
+        if (!item) {
+          // Biblioteca vazia nesse clima: baixa algumas músicas livres (CC0/domínio público) do Openverse
+          const results = (await searchOpenverse({ query: MOOD_QUERY[mood], kind: 'musica', api: process.env.BIGLOOP_OPENVERSE_API || undefined })).filter((r) => (r.durationSec ?? 60) >= 20)
+          if (results.length === 0) throw new Error('nenhuma música livre encontrada no Openverse para esse clima.')
+          for (const r of results.slice(0, 3)) {
+            if (signal.aborted) break
+            try {
+              await downloadToLibrary(r, 'musica', mood, sounds, { signal })
+            } catch (err) {
+              log('warn', 'Falha ao baixar música', err)
+            }
+          }
+          item = sounds.pick('musica', mood)
+          if (!item) throw new Error('não deu para baixar músicas agora.')
+        }
+        return { file: item.file, title: item.title, attribution: item.attribution }
+      },
+      pickEffect: (key) => sounds.list('efeito').find((i) => i.origin === 'gerado' && i.tags.includes(key))?.file ?? null,
       enqueue: (req) => queue.add(req),
       cancelJob: (id) => queue.cancel(id),
       getJob: (id) => queue.state().jobs.find((j) => j.id === id),
@@ -467,7 +492,12 @@ function setupAutopilot(): void {
     join(app.getPath('userData'), 'cortes-automaticos.json')
   )
   const notified = new Set<string>()
+  const drafted = new Set<string>()
   autopilot.on('change', (run: AutoRun) => {
+    if (run.state === 'concluído' && !drafted.has(run.id) && run.finishedAt && Date.now() - run.finishedAt < 10_000 && settings.get().tiktokAutoDrafts && tiktok?.connected) {
+      drafted.add(run.id)
+      void autoSendDrafts(run)
+    }
     send(IPC.evAuto, run)
     updateTray()
     for (const c of run.clips) [c.outputPath, c.thumbnail].forEach((f) => f && allowMediaPath(f))
@@ -491,6 +521,107 @@ function setupAutopilot(): void {
     allowMediaPath(r.path)
     for (const c of r.clips) [c.outputPath, c.thumbnail].forEach((f) => f && allowMediaPath(f))
   }
+}
+
+// ───────────── TikTok ─────────────
+
+function encryptSecret(value: string): string {
+  if (!value) return ''
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('O sistema não oferece armazenamento seguro; não dá para guardar a conexão.')
+  return safeStorage.encryptString(value).toString('base64')
+}
+
+function tiktokConfig(): TikTokAppConfig {
+  const s = settings.get()
+  return {
+    clientKey: s.tiktokClientKey,
+    clientSecret: decryptSecret(s.tiktokClientSecretEnc),
+    redirectUri: s.tiktokRedirectUri,
+    // Somente para testes automatizados
+    api: process.env.BIGLOOP_TIKTOK_API || TIKTOK.api,
+    authorizeUrl: process.env.BIGLOOP_TIKTOK_AUTH || TIKTOK.authorize
+  }
+}
+
+function setupTikTok(): void {
+  let tokens: TikTokTokens | null = null
+  try {
+    const raw = decryptSecret(settings.get().tiktokTokensEnc)
+    tokens = raw ? (JSON.parse(raw) as TikTokTokens) : null
+  } catch {
+    tokens = null
+  }
+  tiktok = new TikTokSession(tiktokConfig(), tokens, (t) => {
+    settings.update({ tiktokTokensEnc: t ? encryptSecret(JSON.stringify(t)) : '' })
+  })
+}
+
+function tiktokStatus(): TikTokStatus {
+  const s = settings.get()
+  return {
+    configured: !!s.tiktokClientKey && !!s.tiktokClientSecretEnc,
+    connected: tiktok.connected,
+    displayName: tiktok.connected ? s.tiktokDisplayName || null : null,
+    avatarUrl: null,
+    redirectUri: s.tiktokRedirectUri,
+    autoDrafts: s.tiktokAutoDrafts
+  }
+}
+
+/** Envia um arquivo ao TikTok e acompanha até o fim. Atualiza o histórico do corte se houver. */
+async function sendToTikTok(req: TikTokPostRequest, onProgress?: (r: number) => void): Promise<{ publishId: string; status: string }> {
+  if (!existsSync(req.file)) throw new Error('O arquivo do corte não existe mais.')
+  tiktok.setConfig(tiktokConfig())
+  const client = tiktok.client()
+  const at = Date.now()
+  const track = (patch: Partial<ClipPost>) => {
+    if (req.runId && req.segmentId) autopilot.setClipPost(req.runId, req.segmentId, { platform: 'tiktok', mode: req.mode, status: 'enviando', at, ...patch })
+  }
+  track({ status: 'enviando', progress: 0 })
+  try {
+    const publishId =
+      req.mode === 'rascunho'
+        ? await client.uploadToInbox(req.file, (r) => (onProgress?.(r), track({ status: 'enviando', progress: r })))
+        : await client.directPost(
+            req.file,
+            {
+              title: req.post!.title,
+              privacyLevel: req.post!.privacyLevel,
+              disableComment: req.post!.disableComment,
+              disableDuet: req.post!.disableDuet,
+              disableStitch: req.post!.disableStitch,
+              brandContent: req.post!.brandContent,
+              brandOrganic: req.post!.brandOrganic
+            },
+            (r) => (onProgress?.(r), track({ status: 'enviando', progress: r }))
+          )
+    track({ status: 'processando', progress: 1, publishId })
+    const st = await client.waitDone(publishId, { intervalMs: 3000, timeoutMs: 3 * 60_000 })
+    const final = st.status === 'PUBLISH_COMPLETE' ? 'publicado' : st.status === 'SEND_TO_USER_INBOX' ? 'enviado' : 'processando'
+    track({ status: final, progress: 1, publishId })
+    log('info', 'TikTok: envio', { mode: req.mode, status: st.status })
+    return { publishId, status: st.status }
+  } catch (err) {
+    track({ status: 'erro', error: errorMessage(err) })
+    log('warn', 'TikTok: falha no envio', err)
+    throw err
+  }
+}
+
+/** Rascunhos automáticos: quando os cortes ficam prontos, manda cada um para a caixa de entrada do TikTok. */
+async function autoSendDrafts(run: AutoRun): Promise<void> {
+  const ready = run.clips.filter((c) => c.status === 'concluído' && c.outputPath && !(c.posts ?? []).some((p) => p.platform === 'tiktok'))
+  let sent = 0
+  for (const c of ready) {
+    try {
+      await sendToTikTok({ file: c.outputPath!, mode: 'rascunho', runId: run.id, segmentId: c.segmentId })
+      sent++
+    } catch {
+      // o erro fica registrado no corte
+    }
+  }
+  if (sent > 0 && Notification.isSupported())
+    new Notification({ title: `📲 ${sent} cortes nos rascunhos do TikTok`, body: 'Abra o app TikTok no celular (Caixa de entrada) para revisar e postar.' }).show()
 }
 
 // ───────────── Atualização automática (GitHub Releases) ─────────────
@@ -822,6 +953,93 @@ function registerIpc(): void {
     }
   })
   handle(IPC.autoList, () => autopilot.list())
+  handle(IPC.tiktokStatus, () => tiktokStatus())
+  handle(IPC.tiktokSaveApp, (_e, clientKey: string, clientSecret: string | null, redirectUri: string) => {
+    try {
+      const patch: Partial<AppSettings> = { tiktokClientKey: String(clientKey ?? '').trim() }
+      if (clientSecret) patch.tiktokClientSecretEnc = encryptSecret(clientSecret.trim())
+      if (redirectUri && /^https?:\/\//.test(redirectUri)) patch.tiktokRedirectUri = redirectUri.trim()
+      settings.update(patch)
+      tiktok.setConfig(tiktokConfig())
+      return ok(tiktokStatus())
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.tiktokConnect, async () => {
+    try {
+      const cfg = tiktokConfig()
+      if (!cfg.clientKey || !cfg.clientSecret) throw new Error('Preencha o Client Key e o Client Secret do seu app do TikTok primeiro.')
+      const port = settings.get().tiktokCallbackPort
+      const { verifier, challenge } = createPkce()
+      // o sufixo ".porta" deixa a página de retorno saber para onde devolver
+      const state = `${createPkce().verifier.slice(0, 24)}.${port}`
+      const wait = waitForAuthCode(port, state)
+      await shell.openExternal(buildAuthUrl(cfg, state, challenge))
+      const code = await wait.promise
+      const tokens = await exchangeCode(cfg, code, verifier)
+      tiktok.setConfig(cfg)
+      tiktok.setTokens(tokens)
+      const info = await tiktok.client().userInfo().catch(() => null)
+      settings.update({ tiktokDisplayName: info?.displayName ?? '' })
+      log('info', 'TikTok conectado', { name: info?.displayName })
+      return ok(tiktokStatus())
+    } catch (err) {
+      log('warn', 'TikTok: falha ao conectar', err)
+      return fail(err)
+    }
+  })
+  handle(IPC.tiktokDisconnect, () => {
+    tiktok.setTokens(null)
+    settings.update({ tiktokDisplayName: '', tiktokAutoDrafts: false })
+    return tiktokStatus()
+  })
+  handle(IPC.tiktokCreator, async () => {
+    try {
+      tiktok.setConfig(tiktokConfig())
+      return ok(await tiktok.client().creatorInfo())
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.tiktokSend, async (_e, req: TikTokPostRequest, taskId: string) => {
+    try {
+      if (req.mode === 'direto' && (!req.post || !req.post.privacyLevel)) throw new Error('Escolha quem pode ver o vídeo.')
+      return ok(await sendToTikTok(req, (r) => send(IPC.evTaskProgress, { taskId, label: 'Enviando ao TikTok', ratio: r })))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.soundsList, (_e, kind?: 'musica' | 'efeito') => sounds.list(kind))
+  handle(IPC.soundsSearch, async (_e, query: string, kind: 'musica' | 'efeito', allowAttribution: boolean) => {
+    try {
+      return ok(await searchOpenverse({ query, kind, allowAttribution, api: process.env.BIGLOOP_OPENVERSE_API || undefined }))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.soundsDownload, async (_e, result, kind, mood) => {
+    try {
+      const item = await downloadToLibrary(result, kind, mood, sounds)
+      allowMediaPath(item.file)
+      return ok(item)
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.soundsImport, async (_e, kind: 'musica' | 'efeito', mood) => {
+    try {
+      const res = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], filters: [{ name: 'Áudio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'] }] })
+      if (res.canceled) return ok(null)
+      const probe = ffprobePath()
+      if (!probe) throw new Error('ffprobe não encontrado.')
+      return ok(await sounds.importFile(probe, res.filePaths[0], kind, mood))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.soundsUpdate, (_e, id: string, patch) => sounds.update(id, { title: typeof patch?.title === 'string' ? patch.title.slice(0, 120) : undefined, mood: patch?.mood }))
+  handle(IPC.soundsRemove, (_e, id: string) => sounds.remove(id))
   handle(IPC.autoCancel, (_e, id: string) => autopilot.cancel(id))
   handle(IPC.autoRemove, (_e, id: string) => autopilot.remove(id))
   const toolsDir = () => join(app.getPath('userData'), 'ferramentas')
@@ -851,6 +1069,7 @@ function registerIpc(): void {
       const r = await installFfmpeg({ baseDir: toolsDir(), signal: ctrl.signal, onProgress: (label, ratio) => send(IPC.evTaskProgress, { taskId, label, ratio }) })
       settings.update({ ffmpegPath: r.ffmpegPath, ffprobePath: r.ffprobePath })
       hwEncoders = null
+      void sounds.ensureGeneratedEffects(r.ffmpegPath).catch(() => undefined)
       log('info', 'FFmpeg instalado', r)
       return ok(r)
     } catch (err) {
@@ -864,7 +1083,7 @@ function registerIpc(): void {
   handle(IPC.saveSettings, async (_e, patch: Partial<AppSettings>) => {
     const before = settings.get()
     // Segredos só pelo canal próprio
-    const { obsPasswordEnc: _a, aiKeyEnc: _b, ...safe } = patch
+    const { obsPasswordEnc: _a, aiKeyEnc: _b, tiktokClientSecretEnc: _c, tiktokTokensEnc: _d, ...safe } = patch
     const after = settings.update(safe)
     if (after.concurrency !== before.concurrency) queue.setConcurrency(after.concurrency)
     if (after.obsEnabled !== before.obsEnabled || after.obsHost !== before.obsHost || after.obsPort !== before.obsPort) {
@@ -969,6 +1188,8 @@ function registerIpc(): void {
 app.on('second-instance', showWindow)
 
 app.whenReady().then(async () => {
+  // Só para testes automatizados no Linux sem cofre de senhas (no Windows sempre usa DPAPI)
+  if (process.platform === 'linux' && process.env.BIGLOOP_E2E === '1' && !safeStorage.isEncryptionAvailable()) safeStorage.setUsePlainTextEncryption(true)
   const lp = initLogger(join(app.getPath('userData'), 'logs'))
   settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), defaultSettings({ outputDir: defaultOutputDir() }))
   projects = new ProjectStore(join(app.getPath('userData'), 'projetos'))
@@ -977,12 +1198,18 @@ app.whenReady().then(async () => {
   setupQueue()
   setupObs()
   setupUpdates()
+  sounds = new SoundLibrary(join(app.getPath('userData'), 'sons'))
+  setupTikTok()
+  allowMediaDir(sounds.filesDir)
   setupAutopilot()
   registerIpc()
   createWindow()
   if (settings.get().minimizeToTray) createTray()
   registerShortcut()
   await restartWatcher()
+  // Pacote de efeitos gerado pelo app (uma vez)
+  const ff = ffmpegPath()
+  if (ff) void sounds.ensureGeneratedEffects(ff).catch((err) => log('warn', 'Efeitos sonoros', err))
   // Detecta logo ao abrir se a pasta padrão está bloqueada (sem travar a abertura)
   if (settings.get().outputDir === defaultOutputDir()) void ensureOutputDir(defaultOutputDir()).catch((err) => log('warn', 'Pasta de saída', err))
   app.on('activate', showWindow)

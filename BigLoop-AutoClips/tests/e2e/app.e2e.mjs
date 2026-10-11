@@ -2,12 +2,13 @@
 // Uso: npm run test:e2e  (no Linux sem tela: xvfb-run -a npm run test:e2e)
 import { _electron } from 'playwright-core'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { WebSocketServer } from 'ws'
+import { createServer } from 'node:http'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const APP = join(here, '..', '..')
@@ -60,8 +61,50 @@ obsServer.on('connection', (ws) => {
 const obsEvent = (eventType, eventData) => obsSockets.forEach((s) => s.send(JSON.stringify({ op: 5, d: { eventType, eventIntent: 64, eventData } })))
 await new Promise((r) => obsServer.once('listening', r))
 
+// Openverse + TikTok simulados num servidor só
+const musicFile = join(WORK, 'calma.mp3')
+spawnSync(ffmpeg, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=20', '-c:a', 'libmp3lame', musicFile])
+const tt = { uploads: [], posts: [] }
+const mock = createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x')
+  const chunks = []
+  for await (const c of req) chunks.push(c)
+  const raw = Buffer.concat(chunks)
+  const json = (st, b) => (res.writeHead(st, { 'content-type': 'application/json' }), res.end(JSON.stringify(b)))
+  if (url.pathname === '/openverse/v1/audio/')
+    return json(200, { results: [{ id: 'calm1', title: 'Calm Test Loop', creator: 'Ana', license: 'cc0', url: `${mockBase}/files/calma.mp3`, duration: 20000, filetype: 'mp3' }] })
+  if (url.pathname === '/files/calma.mp3') {
+    const b = readFileSync(musicFile)
+    res.writeHead(200, { 'content-length': String(b.length) })
+    return res.end(b)
+  }
+  if (url.pathname === '/tiktok/v2/oauth/token/') return json(200, { access_token: 'tok', refresh_token: 'ref', open_id: 'u1', scope: 'x', expires_in: 86400, refresh_expires_in: 999999 })
+  if (url.pathname === '/tiktok/v2/user/info/') return json(200, { data: { user: { display_name: 'André Teste' } }, error: { code: 'ok' } })
+  if (url.pathname === '/tiktok/v2/post/publish/creator_info/query/')
+    return json(200, { data: { creator_username: 'andre', creator_nickname: 'André Teste', privacy_level_options: ['PUBLIC_TO_EVERYONE', 'SELF_ONLY'], max_video_post_duration_sec: 600 }, error: { code: 'ok' } })
+  if (url.pathname.endsWith('/video/init/')) {
+    const b = JSON.parse(raw.toString())
+    const id = `p${tt.uploads.length + tt.posts.length + 1}`
+    ;(b.post_info ? tt.posts : tt.uploads).push({ id, size: b.source_info.video_size, got: 0, post: b.post_info })
+    return json(200, { data: { publish_id: id, upload_url: `${mockBase}/tiktok-upload/${id}` }, error: { code: 'ok' } })
+  }
+  if (url.pathname.startsWith('/tiktok-upload/')) {
+    const it = [...tt.uploads, ...tt.posts].find((x) => x.id === url.pathname.split('/').pop())
+    it.got += raw.length
+    return res.writeHead(it.got >= it.size ? 201 : 206).end()
+  }
+  if (url.pathname === '/tiktok/v2/post/publish/status/fetch/') {
+    const { publish_id } = JSON.parse(raw.toString())
+    const isPost = tt.posts.some((x) => x.id === publish_id)
+    return json(200, { data: { status: isPost ? 'PUBLISH_COMPLETE' : 'SEND_TO_USER_INBOX' }, error: { code: 'ok' } })
+  }
+  json(404, {})
+})
+await new Promise((r) => mock.listen(0, '127.0.0.1', r))
+const mockBase = `http://127.0.0.1:${mock.address().port}`
+
 const step = (msg) => console.log(`• ${msg}`)
-const app = await _electron.launch({ args: [APP, '--no-sandbox', `--user-data-dir=${userData}`], cwd: APP, env: { ...process.env, LANG: 'pt_BR.UTF-8' } })
+const app = await _electron.launch({ args: [APP, '--no-sandbox', `--user-data-dir=${userData}`], cwd: APP, env: { ...process.env, LANG: 'pt_BR.UTF-8', BIGLOOP_E2E: '1', BIGLOOP_OPENVERSE_API: `${mockBase}/openverse/v1/audio/`, BIGLOOP_TIKTOK_API: `${mockBase}/tiktok`, BIGLOOP_TIKTOK_AUTH: `${mockBase}/auth` } })
 const page = await app.firstWindow()
 const problems = []
 page.on('console', (m) => m.type() === 'error' && problems.push(`console: ${m.text()}`))
@@ -74,7 +117,7 @@ const toast = (re, timeout = 30000) => page.waitForSelector(`.toast >> text=${re
 try {
   step('Tela inicial simples')
   await page.waitForSelector('text=Arraste seu vídeo aqui')
-  await page.evaluate((o) => window.bigloop.saveSettings({ outputDir: o, auto: { platform: 'tiktok', count: 3, length: 'curto', subtitles: true, cleanSpeech: true, framing: 'blur' } }), outDir)
+  await page.evaluate((o) => window.bigloop.saveSettings({ outputDir: o, auto: { platform: 'tiktok', count: 3, length: 'curto', subtitles: true, cleanSpeech: true, framing: 'blur', music: 'nenhuma', effects: false } }), outDir)
   await page.reload()
   await page.waitForSelector('text=Arraste seu vídeo aqui')
   await page.waitForSelector('text=Legendas automáticas') // cartão para ativar legendas (whisper ainda não configurado)
@@ -124,6 +167,71 @@ try {
   await page.waitForSelector('text=cortes prontos!', { timeout: 240000 })
   const steps = await page.locator('.step').evaluateAll((els) => els.map((e) => e.className))
   assert.ok(steps[2].includes('ok'), `transcrição deveria estar ok: ${steps}`)
+
+  step('Sons: efeitos gerados e música do Openverse (simulado)')
+  await page.click('nav >> text=Sons')
+  await page.click('.seg >> text=Efeitos')
+  for (let i = 0; i < 50 && (await page.locator('.sound-list li').count()) < 8; i++) await page.waitForTimeout(200)
+  assert.ok((await page.locator('.sound-list li').count()) >= 8, 'pacote de efeitos gerado')
+  await page.click('.seg >> text=Músicas')
+  await page.click('.choice.mini >> text=Calma')
+  await page.fill('.sounds input[type=search]', 'calm')
+  await page.click('.sounds button.primary >> text=Buscar')
+  await page.waitForSelector('text=Calm Test Loop')
+  await page.click('button >> text=+ Adicionar')
+  await page.waitForSelector('button >> text=✓ Na biblioteca')
+  await shot('07a-sons')
+
+  step('2 cliques com música calma + efeito de entrada')
+  await page.click('nav >> text=Criar cortes')
+  await mockOpen(video)
+  await page.click('.hero-drop')
+  await page.locator('.choices').nth(1).getByRole('button', { name: '3' }).click()
+  await page.getByRole('button', { name: 'Calma' }).click()
+  await page.locator('label.switch', { hasText: 'Efeito sonoro de entrada' }).locator('input').check()
+  await page.click('button.cta')
+  await page.waitForSelector('text=cortes prontos!', { timeout: 240000 })
+  const trilha = await page.locator('.step', { hasText: 'Colocando música e efeitos' }).textContent()
+  assert.ok(/Calm Test Loop/.test(trilha), `trilha: ${trilha}`)
+
+  step('TikTok (simulado): conectar, rascunho e postagem com confirmação')
+  await page.click('button[aria-label="Configurações"]')
+  await page.click('.settings-nav >> text=Contas (TikTok)')
+  const tiktokCard = page.locator('.tiktok-account')
+  await tiktokCard.locator('input').nth(0).fill('chave-teste')
+  await tiktokCard.locator('input[type=password]').fill('segredo-teste')
+  await tiktokCard.getByRole('button', { name: 'Salvar' }).click()
+  await page.waitForSelector('.toast', { timeout: 10000 })
+  const saveMsg = await page.locator('.toast').last().textContent()
+  assert.ok(/Dados do app do TikTok salvos/.test(saveMsg), `ao salvar: ${saveMsg}`)
+  // o "navegador" volta direto para o retorno local com o code
+  await app.evaluate(({ shell }) => {
+    shell.openExternal = async (u) => {
+      const state = new URL(u).searchParams.get('state')
+      setTimeout(() => fetch(`http://127.0.0.1:53682/callback/?code=abc&state=${encodeURIComponent(state)}`), 300)
+    }
+  })
+  await tiktokCard.getByRole('button', { name: 'Conectar ao TikTok' }).click()
+  await page.waitForSelector('text=Conectado ao TikTok como André Teste', { timeout: 15000 })
+  await shot('07b-tiktok-conectado')
+  await page.click('nav >> text=Meus cortes')
+  await page.locator('.history-item').first().click()
+  await page.waitForSelector('text=cortes prontos!')
+  await page.locator('.clip').first().getByRole('button', { name: '📲 Rascunho' }).click()
+  await page.waitForSelector('.post-status.enviado', { timeout: 30000 })
+  assert.equal(tt.uploads.length, 1)
+  assert.ok(tt.uploads[0].got === tt.uploads[0].size && tt.uploads[0].size > 0)
+  await page.locator('.clip').first().getByRole('button', { name: 'Postar' }).click()
+  await page.waitForSelector('.modal >> text=André Teste')
+  const postBtn = page.locator('.modal').getByRole('button', { name: 'Postar no TikTok' })
+  assert.equal(await postBtn.isDisabled(), true, 'sem escolher privacidade não posta')
+  await page.locator('.modal select').selectOption('SELF_ONLY')
+  await shot('07c-postar')
+  await postBtn.click()
+  await toast('Publicado no TikTok', 30000)
+  assert.equal(tt.posts.length, 1)
+  assert.equal(tt.posts[0].post.privacy_level, 'SELF_ONLY')
+  assert.equal(tt.posts[0].post.disable_comment, true, 'interações começam desligadas')
 
   step('Editor avançado: abrir, analisar, sugestão, transcrição, exportar, XML/EDL, desfazer')
   await page.click('nav >> text=Editor avançado')
@@ -212,5 +320,6 @@ try {
 } finally {
   await app.close().catch(() => undefined)
   obsServer.close()
+  mock.close()
   if (!process.env.E2E_KEEP) rmSync(WORK, { recursive: true, force: true })
 }

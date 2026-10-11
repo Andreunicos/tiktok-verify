@@ -363,3 +363,21 @@ h2.plain { text-transform: none; letter-spacing: 0; color: var(--text); font-siz
 .badge.rodando { color: var(--warn); }
 .badge.cancelado { color: var(--muted); }
 .library-view p { margin: 4px 0 0; }
+
+/* Sons, TikTok */
+.sounds { flex: 1; overflow: auto; padding: 22px; display: grid; gap: 14px; align-content: start; max-width: 1100px; width: 100%; margin: 0 auto; }
+.sounds p { margin: 4px 0 0; }
+.seg { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; background: transparent; padding: 8px 14px; }
+.seg button.on { background: var(--accent); color: #fff; }
+.sound-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.sound-list li { display: flex; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); }
+.sound-list select { width: auto; }
+.choice.mini { min-width: 0; padding: 4px 10px; border-width: 1px; }
+.steps-help { display: grid; gap: 8px; padding-left: 18px; }
+.post-form { display: grid; gap: 10px; }
+.avatar { width: 36px; height: 36px; border-radius: 50%; }
+.post-status { margin: 0; }
+.post-status.erro { color: var(--err); }
+.post-status.enviado, .post-status.publicado { color: var(--ok); }
+details > summary { cursor: pointer; margin-bottom: 6px; }
