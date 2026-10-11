@@ -7,7 +7,7 @@ import { AiError } from './ai'
  * O usuário cria a própria chave grátis; o app tenta um serviço e, se falhar ou bater o limite,
  * passa para o próximo. Envia só TEXTO da transcrição — nunca vídeo ou áudio.
  */
-export type FreeProviderId = 'groq' | 'cerebras' | 'openrouter'
+export type FreeProviderId = 'groq' | 'cerebras' | 'openrouter' | 'pollinations' | 'pollinationsLegacy'
 
 export interface FreeProvider {
   id: FreeProviderId
@@ -18,6 +18,12 @@ export interface FreeProvider {
   prefer: RegExp[]
   /** Só aceita modelos que passem aqui (ex.: OpenRouter só os ":free"). */
   accept?: (id: string) => boolean
+  /** Funciona sem chave (plano anônimo, mais lento e com limite por minuto). */
+  keyless?: boolean
+  /** Modelo fixo (não lista os modelos). */
+  fixedModel?: string
+  /** Endereço completo do chat, quando não é base + /chat/completions. */
+  chatUrl?: string
 }
 
 const PREFER = [/gpt-oss-120b/i, /llama-?3\.3-70b/i, /qwen-?3.*(32b|235b)/i, /llama.*70b/i, /gpt-oss-20b/i, /qwen/i, /llama/i]
@@ -32,10 +38,22 @@ export const FREE_PROVIDERS: Record<FreeProviderId, FreeProvider> = {
     keyUrl: 'https://openrouter.ai/keys',
     prefer: PREFER,
     accept: (id) => id.endsWith(':free')
+  },
+  // Sem chave nem cadastro (modelos abertos). Último recurso antes das regras locais.
+  pollinations: { id: 'pollinations', label: 'Pollinations', base: 'https://gen.pollinations.ai/v1', keyUrl: 'https://pollinations.ai/', prefer: PREFER, keyless: true, fixedModel: 'openai' },
+  pollinationsLegacy: {
+    id: 'pollinationsLegacy',
+    label: 'Pollinations',
+    base: 'https://text.pollinations.ai',
+    keyUrl: 'https://pollinations.ai/',
+    prefer: PREFER,
+    keyless: true,
+    fixedModel: 'openai',
+    chatUrl: 'https://text.pollinations.ai/openai'
   }
 }
 
-export const FREE_ORDER: FreeProviderId[] = ['groq', 'cerebras', 'openrouter']
+export const FREE_ORDER: FreeProviderId[] = ['groq', 'cerebras', 'openrouter', 'pollinations', 'pollinationsLegacy']
 
 /** Modelos que não servem para texto (voz, moderação, embeddings…). */
 const NOT_CHAT = /whisper|tts|guard|embed|moderation|vision-preview|playai|orpheus|distil|prompt-guard|compound/i
@@ -74,6 +92,8 @@ export interface FreeAiOptions {
   /** Para testes: troca o endereço base de todos os serviços. */
   baseOverride?: string
   timeoutMs?: number
+  /** Usa os serviços sem chave (Pollinations) quando os com chave falham ou não existem. */
+  allowKeyless?: boolean
   log?: (level: 'info' | 'warn', msg: string, extra?: unknown) => void
 }
 
@@ -89,7 +109,7 @@ export class FreeAi {
   constructor(private readonly o: FreeAiOptions) {}
 
   configured(): FreeProviderId[] {
-    return FREE_ORDER.filter((id) => !!this.o.keys[id]?.trim())
+    return FREE_ORDER.filter((id) => !!this.o.keys[id]?.trim() || (FREE_PROVIDERS[id].keyless && this.o.allowKeyless))
   }
 
   private base(p: FreeProvider): string {
@@ -98,20 +118,19 @@ export class FreeAi {
 
   private async call(p: FreeProvider, path: string, init: RequestInit): Promise<Response> {
     const f = this.o.fetchImpl ?? fetch
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.o.keys[p.id]!.trim()}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json'
-    }
+    const key = this.o.keys[p.id]?.trim()
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }
     if (p.id === 'openrouter') Object.assign(headers, { 'HTTP-Referer': 'https://andreunicos.github.io/tiktok-verify/', 'X-Title': 'BigLoop AutoClips' })
     try {
-      return await f(`${this.base(p)}${path}`, { ...init, headers, signal: AbortSignal.timeout(this.o.timeoutMs ?? 90_000) })
+      const url = path === '/chat/completions' && p.chatUrl && !this.o.baseOverride ? p.chatUrl : `${this.base(p)}${path}`
+      return await f(url, { ...init, headers, signal: AbortSignal.timeout(this.o.timeoutMs ?? 90_000) })
     } catch (err) {
       throw new AiError(`Sem conexão com ${p.label} (${(err as Error).message}).`)
     }
   }
 
   private async model(p: FreeProvider): Promise<string> {
+    if (p.fixedModel) return p.fixedModel
     const cached = this.models.get(p.id)
     if (cached) return cached
     const res = await this.call(p, '/models', { method: 'GET' })
@@ -156,7 +175,7 @@ export class FreeAi {
   /** Tenta cada serviço configurado, em ordem, até um responder certo. */
   async json<T>(system: string, user: string, schema: z.ZodType<T>): Promise<FreeAiAnswer<T>> {
     const list = this.configured()
-    if (list.length === 0) throw new AiError('Cole uma chave grátis (Groq, Cerebras ou OpenRouter) em Configurações → IA.')
+    if (list.length === 0) throw new AiError('Cole uma chave grátis (Groq, Cerebras ou OpenRouter) em Configurações → IA, ou ligue a IA sem chave.')
     const errors: string[] = []
     for (const id of list) {
       try {

@@ -226,6 +226,43 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     expect(probeJson(done.clips[0].outputPath!).streams.find((s: { codec_type: string }) => s.codec_type === 'video').height).toBe(1920)
   })
 
+  it('instala as legendas sozinho e segue o pedido escrito (quantidade, duração, IA)', async () => {
+    let installed = false
+    let request: string | undefined
+    const realTranscriber = (path: string, signal: AbortSignal, onProgress: (r: number) => void) =>
+      transcribe(path, { ffmpegPath: ffmpeg!, whisperPath: fakeWhisper, modelPath: fakeWhisper, language: 'pt', threads: 2, signal, onProgress: (_s, r) => onProgress(r) })
+    const labels: string[] = []
+    const { pilot, projects } = setup(false, undefined, {
+      transcriber: () => (installed ? realTranscriber : null),
+      installTranscriber: async (_signal, onProgress) => {
+        onProgress('Baixando o modelo de fala', 0.5)
+        labels.push('instalou')
+        installed = true
+      },
+      aiPlan: async (_p, count, candidates, req) => {
+        request = req
+        return { via: 'IA de teste', clips: candidates.slice(0, count).map((c) => ({ id: c.id, aiScore: 90, title: 'Um título bem chamativo', description: 'd', hashtags: ['#a'], hook: '', keywords: [] })) }
+      }
+    })
+    const live2 = join(dir, 'outra live.mp4')
+    makeLive(live2)
+    const done = await waitDone(pilot, pilot.start(live2, opts({ count: 5, length: 'longo', instructions: 'faz 2 cortes de 20 segundos dos momentos engraçados' })).id)
+    expect(done.state).toBe('concluído')
+    expect(labels).toEqual(['instalou'])
+    expect(done.steps.find((s) => s.key === 'transcrever')!.state).toBe('ok')
+    expect(projects.get(done.projectId)!.transcript!.cues.length).toBeGreaterThan(0)
+    expect(done.options.count).toBe(2)
+    expect(done.options.music).toBe('engracada')
+    expect(done.options.customSec).toEqual({ min: 17, max: 22 })
+    expect(done.clips).toHaveLength(2)
+    expect(request).toBe('faz 2 cortes de 20 segundos dos momentos engraçados')
+    for (const c of done.clips) {
+      const dur = Number(probeJson(c.outputPath!).format.duration)
+      expect(dur).toBeGreaterThan(12)
+      expect(dur).toBeLessThan(32)
+    }
+  })
+
   it('cancelar para tudo', async () => {
     const { pilot } = setup(false)
     const run = pilot.start(live, opts({ count: 5 }))

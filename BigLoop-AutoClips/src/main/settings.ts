@@ -36,6 +36,7 @@ export function defaultSettings(paths: { outputDir: string }): AppSettings {
     groqKeyEnc: '',
     cerebrasKeyEnc: '',
     openrouterKeyEnc: '',
+    keylessAi: true,
     smartDefaultsV1: false,
     onboardingDone: false,
     autoUpdate: true,

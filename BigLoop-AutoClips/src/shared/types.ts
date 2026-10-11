@@ -329,6 +329,8 @@ export interface AppSettings {
   groqKeyEnc: string
   cerebrasKeyEnc: string
   openrouterKeyEnc: string
+  /** IA grátis sem chave (Pollinations) quando não há chave ou as outras falham. */
+  keylessAi: boolean
   /** Já aplicou os novos padrões do modo automático (enquadramento inteligente e edição turbinada). */
   smartDefaultsV1: boolean
   onboardingDone: boolean
@@ -448,6 +450,10 @@ export interface AutoOptions {
   effects: boolean
   /** Edição turbinada: gancho no começo, zooms nos picos, título na tela e barra de progresso. Padrão: ligado. */
   smartEdit?: boolean
+  /** Pedido escrito pela pessoa ("5 cortes de 30 s dos momentos engraçados"). Vai também para a IA. */
+  instructions?: string
+  /** Duração pedida no texto (substitui o tamanho padrão). */
+  customSec?: { min: number; max: number }
 }
 
 export type AutoStepKey = 'ler' | 'analisar' | 'transcrever' | 'escolher' | 'limpar' | 'trilha' | 'editar' | 'exportar'

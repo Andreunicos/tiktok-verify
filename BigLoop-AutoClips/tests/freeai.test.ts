@@ -94,6 +94,37 @@ describe('IA grátis (Groq / Cerebras / OpenRouter)', () => {
   })
 })
 
+describe('IA grátis sem chave (Pollinations)', () => {
+  it('sem chave nenhuma usa a Pollinations, sem cabeçalho de autorização', async () => {
+    const calls: { url: string; auth?: string; model?: string }[] = []
+    const f = (async (input: string | URL | Request, init: RequestInit = {}) => {
+      const h = init.headers as Record<string, string>
+      calls.push({ url: String(input), auth: h.Authorization, model: JSON.parse(String(init.body)).model })
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }), { status: 200 })
+    }) as typeof fetch
+    const r = await new FreeAi({ keys: {}, allowKeyless: true, fetchImpl: f }).json('s', 'u', Schema)
+    expect(r.provider).toBe('pollinations')
+    expect(calls[0]).toEqual({ url: 'https://gen.pollinations.ai/v1/chat/completions', auth: undefined, model: 'openai' })
+  })
+  it('se a nova falhar, tenta o endereço antigo; desligada, pede chave', async () => {
+    const urls: string[] = []
+    const f = (async (input: string | URL | Request) => {
+      urls.push(String(input))
+      return String(input).includes('gen.') ? new Response('{}', { status: 503 }) : new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }), { status: 200 })
+    }) as typeof fetch
+    const r = await new FreeAi({ keys: {}, allowKeyless: true, fetchImpl: f }).json('s', 'u', Schema)
+    expect(r.provider).toBe('pollinationsLegacy')
+    expect(urls).toEqual(['https://gen.pollinations.ai/v1/chat/completions', 'https://text.pollinations.ai/openai'])
+    await expect(new FreeAi({ keys: {}, allowKeyless: false }).json('s', 'u', Schema)).rejects.toThrow(/Cole uma chave grátis/)
+  })
+  it('com chave do Groq, a Pollinations fica por último', () => {
+    expect(new FreeAi({ keys: { groq: 'g' }, allowKeyless: true }).configured()).toEqual(['groq', 'pollinations', 'pollinationsLegacy'])
+  })
+  it('o pedido escrito vai para a IA', () => {
+    expect(buildPlanPrompt('TikTok', 2, [], 'só os momentos engraçados')).toContain('Pedido de quem gravou (siga com prioridade ao dar as notas): "só os momentos engraçados"')
+  })
+})
+
 describe('cérebro do modo automático (plano da IA)', () => {
   const cands: PlanCandidate[] = [
     { id: 's1', startSec: 0, endSec: 30, ruleScore: 70, text: 'Olha só essa jogada absurda que eu fiz.' },

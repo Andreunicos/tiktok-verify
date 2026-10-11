@@ -79,12 +79,19 @@ export function AiSettings({ settings: s, onSettings }: Props) {
 
       {provider === 'gratis' && (
         <>
+          <label className="switch">
+            <input type="checkbox" checked={s.keylessAi !== false} onChange={(e) => onSettings({ keylessAi: e.target.checked })} />
+            <span>
+              <strong>IA grátis sem chave</strong> (Pollinations, modelos abertos): funciona sem cadastro. Mais lenta e com limite por minuto — por isso uma
+              chave do Groq abaixo é recomendada.
+            </span>
+          </label>
           <ol className="muted small">
             <li>
               Clique em <strong>Criar chave grátis</strong> no Groq, entre com o Google e clique em “Create API Key”.
             </li>
             <li>Copie a chave e cole aqui. Pronto: sem cartão de crédito e com limite grátis bem acima do que o app usa.</li>
-            <li>Opcional: cole também uma chave do Cerebras ou do OpenRouter. Se o Groq falhar ou bater o limite, o app usa a reserva sozinho.</li>
+            <li>Opcional: cole também uma chave do Cerebras ou do OpenRouter. Se um falhar ou bater o limite, o app passa para o próximo e, no fim, para a IA sem chave.</li>
           </ol>
           {FREE.map((f) => (
             <KeyRow

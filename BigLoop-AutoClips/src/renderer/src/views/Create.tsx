@@ -55,6 +55,7 @@ export function Create(p: Props) {
   const [file, setFile] = useState<{ path: string; meta: MediaMetadata; thumb: string | null } | null>(null)
   const [loading, setLoading] = useState(false)
   const [opts, setOpts] = useState<AutoOptions>(p.settings.auto)
+  const [wish, setWish] = useState('')
   const set = (patch: Partial<AutoOptions>) => setOpts((o) => ({ ...o, ...patch }))
   const subtitlesReady = !!p.tools && !p.tools.whisper.error
   const run = p.runs.find((r) => r.id === p.activeRunId) ?? null
@@ -81,10 +82,11 @@ export function Create(p: Props) {
 
   const generate = async () => {
     if (!file) return
-    const res = await api.autoStart(file.path, opts)
+    const res = await api.autoStart(file.path, { ...opts, instructions: wish.trim() || undefined })
     if (!res.ok) return toast(res.error, 'erro')
     p.setActiveRunId(res.value.id)
     setFile(null)
+    setWish('')
   }
 
   if (run)
@@ -153,6 +155,19 @@ export function Create(p: Props) {
             <button className="ghost" onClick={() => setFile(null)}>
               Trocar vídeo
             </button>
+          </div>
+
+          <div className="wish">
+            <label className="group-label" htmlFor="wish">O que você quer? (opcional — escreva do seu jeito)</label>
+            <textarea
+              id="wish"
+              rows={2}
+              maxLength={500}
+              value={wish}
+              onChange={(e) => setWish(e.target.value)}
+              placeholder="Ex.: faz 5 cortes de 30 segundos dos momentos mais engraçados, com música épica"
+            />
+            <small className="muted">Quantidade, duração e música que você escrever aqui valem mais que as opções abaixo. A IA usa o resto para escolher os trechos.</small>
           </div>
 
           <div className="choices-group">
