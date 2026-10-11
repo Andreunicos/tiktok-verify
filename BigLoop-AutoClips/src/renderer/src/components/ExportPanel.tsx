@@ -85,6 +85,7 @@ export function ExportPanel({ options: o, onChange, meta, hwEncoders, hasTranscr
             <Field label="Encaixe">
               <select value={o.fit} onChange={(e) => set({ fit: e.target.value as ExportOptions['fit'] })} disabled={o.aspect === 'original'}>
                 <option value="crop">Recortar (preenche a tela)</option>
+                <option value="game">Jogo em destaque (ampliado no meio)</option>
                 <option value="blur">Fundo desfocado</option>
                 <option value="pad">Barras pretas</option>
               </select>

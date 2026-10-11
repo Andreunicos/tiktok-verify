@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectSilences, downsamplePeaks, parseShowinfoTimes, PcmAnalyzer, percentile, perSecondDb, toDb } from '../src/shared/analysis'
+import { detectSilences, downsamplePeaks, parseScenesAndMotion, parseShowinfoTimes, PcmAnalyzer, percentile, perSecondDb, toDb } from '../src/shared/analysis'
 import { removeFillers } from '../src/shared/fillers'
 import { hashtags, keywords, localTitle } from '../src/shared/social'
 import { DEFAULT_WEIGHTS, learnWeights, suggestClips } from '../src/shared/suggest'
@@ -133,4 +133,17 @@ describe('removeFillers com canCutPause', () => {
     const cutAll = removeFillers({ startSec: 0, endSec: 10 }, words, { fillers: [], maxPauseSec: 0.6, keepPauseSec: 0.15 })
     expect(cutAll.removedSec).toBeGreaterThan(8)
   })
+})
+
+it('parseScenesAndMotion separa cenas (showinfo) e movimento por segundo (YDIF)', () => {
+  const log = [
+    '[Parsed_metadata_3 @ 0x1] frame:0    pts:0       pts_time:0',
+    '[Parsed_metadata_3 @ 0x1] lavfi.signalstats.YDIF=0',
+    '[Parsed_metadata_3 @ 0x1] frame:1    pts:1       pts_time:0.6',
+    '[Parsed_metadata_3 @ 0x1] lavfi.signalstats.YDIF=4',
+    '[Parsed_metadata_3 @ 0x1] frame:2    pts:2       pts_time:1.2',
+    '[Parsed_metadata_3 @ 0x1] lavfi.signalstats.YDIF=10',
+    '[Parsed_showinfo_5 @ 0x2] n:0 pts:6 pts_time:1.2 duration:1'
+  ].join('\n')
+  expect(parseScenesAndMotion(log)).toEqual({ scenes: [1.2], motion: [2, 10] })
 })

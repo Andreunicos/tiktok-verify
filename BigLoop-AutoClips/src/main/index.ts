@@ -26,7 +26,7 @@ import { learnWeights, suggestClips } from '../shared/suggest'
 import type { AppSettings, SecretKind, AutoRun, ClipPost, CutRequest, TikTokPostRequest, TikTokStatus, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
 import { autoUpdater } from 'electron-updater'
 import { AutoPilot } from './autopilot'
-import { downloadToLibrary, MOOD_QUERY, searchOpenverse } from './openverse'
+import { downloadToLibrary, MOOD_QUERIES, searchOpenverse } from './openverse'
 import { MUSIC_VARIANTS } from '../shared/music'
 import { z } from 'zod'
 import { FREE_PROVIDERS, FreeAi, type FreeProviderId } from './freeai'
@@ -475,21 +475,28 @@ function setupAutopilot(): void {
         // 1) Músicas baixadas/importadas desse clima; 2) tenta o Openverse uma vez por sessão;
         // 3) sempre sobra a trilha gerada pelo app (funciona sem internet).
         const own = () => sounds.list('musica').filter((i) => i.mood === mood && i.origin !== 'gerado')
-        if (own().length === 0 && !openverseTried.has(mood)) {
+        if (own().length < 3 && !openverseTried.has(mood)) {
           openverseTried.add(mood)
-          try {
-            const timeout = AbortSignal.any([signal, AbortSignal.timeout(45_000)])
-            const results = (await searchOpenverse({ query: MOOD_QUERY[mood], kind: 'musica', api: process.env.BIGLOOP_OPENVERSE_API || undefined })).filter((r) => (r.durationSec ?? 60) >= 20)
-            for (const r of results.slice(0, 3)) {
-              if (timeout.aborted) break
-              try {
-                await downloadToLibrary(r, 'musica', mood, sounds, { signal: timeout })
-              } catch (err) {
-                log('warn', 'Falha ao baixar música', err)
+          const timeout = AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+          // Músicas reais (CC0, domínio público ou CC BY com crédito automático na descrição)
+          for (const query of MOOD_QUERIES[mood]) {
+            if (timeout.aborted || own().length >= 4) break
+            try {
+              const results = (await searchOpenverse({ query, kind: 'musica', allowAttribution: true, api: process.env.BIGLOOP_OPENVERSE_API || undefined }))
+                .filter((r) => (r.durationSec ?? 60) >= 30 && (r.durationSec ?? 60) <= 900)
+                .filter((r) => !sounds.has(r.url))
+              for (const r of results.slice(0, 4 - own().length)) {
+                if (timeout.aborted) break
+                try {
+                  await downloadToLibrary(r, 'musica', mood, sounds, { signal: timeout })
+                } catch (err) {
+                  log('warn', 'Falha ao baixar música', err)
+                }
               }
+            } catch (err) {
+              log('warn', 'Openverse indisponível; usando trilha gerada pelo app', err)
+              break
             }
-          } catch (err) {
-            log('warn', 'Openverse indisponível; usando trilha gerada pelo app', err)
           }
         }
         if (signal.aborted) return null
@@ -497,7 +504,7 @@ function setupAutopilot(): void {
         // Cada corte do mesmo vídeo pega uma música diferente (gira pela lista a partir de um sorteio)
         const k = (index ?? 0) + musicOffset
         const item = pool.length ? pool[k % pool.length] : await sounds.ensureGeneratedMusic(mood, k % MUSIC_VARIANTS)
-        return { file: item.file, title: item.title, attribution: item.attribution }
+        return { file: item.file, title: item.title, attribution: item.attribution, generated: item.origin === 'gerado' }
       },
       pickEffect: (key) => sounds.list('efeito').find((i) => i.origin === 'gerado' && i.tags.includes(key))?.file ?? null,
       enqueue: (req) => queue.add(req),

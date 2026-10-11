@@ -183,7 +183,8 @@ export function Create(p: Props) {
             <div className="choices-group">
               <span className="group-label">Enquadramento</span>
               <div className="choices">
-                <Choice value="auto" current={opts.framing} onPick={(framing) => set({ framing })} title="Inteligente" sub="segue a pessoa" />
+                <Choice value="auto" current={opts.framing} onPick={(framing) => set({ framing })} title="Inteligente" sub="pessoa ou jogo" />
+                <Choice value="game" current={opts.framing} onPick={(framing) => set({ framing })} title="Jogo em destaque" sub="ampliado no meio" />
                 <Choice value="blur" current={opts.framing} onPick={(framing) => set({ framing })} title="Vídeo inteiro" sub="fundo desfocado" />
                 <Choice value="crop" current={opts.framing} onPick={(framing) => set({ framing })} title="Preencher a tela" sub="corta as laterais" />
               </div>
@@ -202,9 +203,9 @@ export function Create(p: Props) {
               <input type="checkbox" checked={opts.subtitles && subtitlesReady} disabled={!subtitlesReady} onChange={(e) => set({ subtitles: e.target.checked })} />
               <span>Legendas {subtitlesReady ? 'estilo TikTok' : '(ative as legendas automáticas)'}</span>
             </label>
-            <label className={`switch ${!subtitlesReady ? 'disabled' : ''}`}>
-              <input type="checkbox" checked={opts.cleanSpeech && subtitlesReady} disabled={!subtitlesReady} onChange={(e) => set({ cleanSpeech: e.target.checked })} />
-              <span>Tirar “éé”, “hum” e pausas</span>
+            <label className="switch">
+              <input type="checkbox" checked={opts.cleanSpeech} onChange={(e) => set({ cleanSpeech: e.target.checked })} />
+              <span>Tirar enrolação e tempo parado</span>
             </label>
             <label className="switch">
               <input type="checkbox" checked={opts.effects} onChange={(e) => set({ effects: e.target.checked })} />

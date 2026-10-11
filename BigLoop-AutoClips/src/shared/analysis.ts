@@ -130,6 +130,34 @@ export function parseShowinfoTimes(stderr: string): number[] {
   return out
 }
 
+/**
+ * Lê a saída combinada de showinfo (mudanças de cena) e metadata/signalstats (YDIF = quanto a imagem
+ * mudou entre quadros). Retorna as cenas e o movimento médio por segundo (0 = parado).
+ */
+export function parseScenesAndMotion(stderr: string): { scenes: number[]; motion: number[] } {
+  const scenes: number[] = []
+  const sum: number[] = []
+  const cnt: number[] = []
+  let cur: number | null = null
+  for (const line of stderr.split('\n')) {
+    if (line.includes('Parsed_showinfo')) {
+      const m = /pts_time:\s*([\d.]+)/.exec(line)
+      if (m) scenes.push(Math.round(Number(m[1]) * 100) / 100)
+    } else if (line.includes('Parsed_metadata')) {
+      const t = /pts_time:\s*([\d.]+)/.exec(line)
+      if (t) cur = Number(t[1])
+      const y = /YDIF=([\d.]+)/.exec(line)
+      if (y && cur !== null) {
+        const sec = Math.floor(cur)
+        sum[sec] = (sum[sec] ?? 0) + Number(y[1])
+        cnt[sec] = (cnt[sec] ?? 0) + 1
+      }
+    }
+  }
+  const motion = Array.from({ length: sum.length }, (_, i) => (cnt[i] ? Math.round((sum[i] / cnt[i]) * 100) / 100 : 0))
+  return { scenes, motion }
+}
+
 export interface Reaction {
   startSec: number
   endSec: number

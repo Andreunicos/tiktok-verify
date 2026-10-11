@@ -144,23 +144,23 @@ export function strongMoments(m: MomentInput): { atSec: number; kind: 'pico' | '
 }
 
 /** Escolhe os efeitos sonoros: entrada, transição do gancho, "ding" em palavras e impacto no pico. */
-export function planEffects(m: MomentInput, available: (key: string) => boolean, maxPerClip = 6): PlannedEffect[] {
+export function planEffects(m: MomentInput, available: (key: string) => boolean, maxPerClip = 4): PlannedEffect[] {
   const fx: PlannedEffect[] = []
   const add = (key: string, atSec: number, volume: number, gap = 2.5) => {
     if (!available(key) || fx.length >= maxPerClip) return
     if (fx.some((f) => Math.abs(f.atSec - atSec) < gap)) return
     fx.push({ key, atSec: r3(Math.max(0, atSec)), volume })
   }
-  add('whoosh', 0, 0.35, 0)
-  if (m.teaserSec && m.teaserSec > 0) add('rebobinar', m.teaserSec - 0.15, 0.45, 0.5)
+  add('whoosh', 0, 0.22, 0)
+  if (m.teaserSec && m.teaserSec > 0) add('rebobinar', m.teaserSec - 0.15, 0.3, 0.5)
   const moments = strongMoments(m)
   const peaks = moments.filter((x) => x.kind === 'pico').sort((a, b) => b.strength - a.strength)
-  if (peaks[0] && peaks[0].strength >= 0.6) add('impacto', peaks[0].atSec - 0.05, 0.5)
+  if (peaks[0] && peaks[0].strength >= 0.75) add('impacto', peaks[0].atSec - 0.05, 0.35)
   let dings = 0
   for (const w of moments.filter((x) => x.kind === 'palavra')) {
-    if (dings >= 3 || w.atSec < 1) continue
+    if (dings >= 2 || w.atSec < 1) continue
     const before = fx.length
-    add(dings % 2 ? 'pop' : 'ding', w.atSec, 0.3, 4)
+    add(dings % 2 ? 'pop' : 'ding', w.atSec, 0.2, 5)
     if (fx.length > before) dings++
   }
   return fx.sort((a, b) => a.atSec - b.atSec)
@@ -204,4 +204,60 @@ export function trackExpr(points: { t: number; x: number }[], timeVar = 't'): st
     expr = `if(lt(${timeVar},${r3(b.t)}),${lerp},${expr})`
   }
   return `if(lt(${timeVar},${r3(points[0].t)}),${r3(points[0].x)},${expr})`
+}
+
+/**
+ * Tira o "tempo morto" de dentro do corte: trechos em silêncio E com pouca mudança na imagem
+ * (ex.: andando no mapa sem nada acontecendo). Sem dados de movimento, só silêncios longos.
+ */
+export function removeDeadTime(range: Range, silences: Range[], motion: number[] | undefined, opts = { minDead: 1.5, pad: 0.25 }): Range[] {
+  const vals = (motion ?? []).filter((m) => m > 0).sort((a, b) => a - b)
+  const med = vals.length ? vals[Math.floor(vals.length / 2)] : 0
+  const lowMotion = (a: number, b: number) => {
+    if (!motion?.length) return b - a >= 2.5
+    const xs = motion.slice(Math.floor(a), Math.ceil(b))
+    return xs.length > 0 && xs.reduce((x, y) => x + y, 0) / xs.length < med * 0.6
+  }
+  const dead = silences
+    .map((s) => ({ startSec: Math.max(s.startSec, range.startSec), endSec: Math.min(s.endSec, range.endSec) }))
+    .filter((s) => s.endSec - s.startSec >= opts.minDead + opts.pad * 2 && lowMotion(s.startSec, s.endSec))
+    .map((s) => ({ startSec: s.startSec + opts.pad, endSec: s.endSec - opts.pad }))
+  if (dead.length === 0) return [range]
+  const out: Range[] = []
+  let cur = range.startSec
+  for (const d of dead) {
+    if (d.startSec - cur >= 0.3) out.push({ startSec: r3(cur), endSec: r3(d.startSec) })
+    cur = d.endSec
+  }
+  if (range.endSec - cur >= 0.3) out.push({ startSec: r3(cur), endSec: r3(range.endSec) })
+  return out
+}
+
+/**
+ * Gancho sem fala: pega o momento mais intenso do corte (som alto + ação na tela), se ele estiver
+ * depois dos 6 primeiros segundos, para mostrar 2,5 s dele logo no começo.
+ */
+export function peakTeaserRange(ranges: Range[], rmsDb: number[], motion: number[] | undefined): Range | null {
+  const secs: number[] = []
+  for (const r of ranges) for (let s = Math.ceil(r.startSec); s < Math.floor(r.endSec); s++) secs.push(s)
+  if (secs.length < 10) return null
+  const dbs = secs.map((s) => rmsDb[s] ?? -90)
+  const sortedDb = [...dbs].sort((a, b) => a - b)
+  const medDb = sortedDb[Math.floor(sortedDb.length / 2)]
+  const mos = secs.map((s) => motion?.[s] ?? 0)
+  const sortedMo = [...mos].sort((a, b) => a - b)
+  const medMo = sortedMo[Math.floor(sortedMo.length / 2)] || 1
+  let best = -Infinity
+  let bestSec = -1
+  secs.forEach((s, i) => {
+    const out = toOutputTime(s, ranges)
+    if (out === null || out < 6) return
+    const score = (dbs[i] - medDb) / 6 + (motion?.length ? (mos[i] / medMo - 1) : 0)
+    if (score > best) {
+      best = score
+      bestSec = s
+    }
+  })
+  if (bestSec < 0 || best < 1) return null
+  return { startSec: bestSec - 1.2, endSec: bestSec + 1.3 }
 }

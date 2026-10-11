@@ -225,7 +225,7 @@ const escapeAss = (t: string) => t.replace(/\\/g, '\\\\').replace(/\{/g, '(').re
  * O tamanho da fonte é relativo a uma tela de 1080 de largura.
  */
 export interface AssExtras {
-  /** Título grande no topo nos primeiros segundos (caixa branca, texto preto). */
+  /** Título grande no topo nos primeiros segundos (texto branco com contorno preto). */
   title?: string
   titleSec?: number
   /** Palavras com destaque permanente (amarelo e um pouco maiores). */
@@ -256,7 +256,7 @@ export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, heigh
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
     `Style: Default,${style.font},${fontSize},${assColor(style.textColor)},${assColor(style.highlightColor)},${assColor(style.outlineColor)},&H80000000,-1,0,0,0,100,100,0,0,1,${Math.round(style.outline * scale)},0,${alignment},${marginH},${marginH},${marginV},1`,
-    `Style: Title,${style.font},${Math.round(fontSize * 0.9)},&H00111111,&H00111111,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,${Math.max(6, Math.round(14 * scale))},0,8,${marginH},${marginH},${Math.round(height * 0.09)},1`,
+    `Style: Title,${style.font},${Math.round(fontSize * 1.05)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,${Math.max(3, Math.round(6 * scale))},${Math.max(1, Math.round(3 * scale))},8,${marginH},${marginH},${Math.round(height * 0.1)},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'

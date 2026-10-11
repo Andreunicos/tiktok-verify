@@ -224,7 +224,7 @@ try {
   await page.waitForSelector('text=cortes prontos!', { timeout: 240000 })
   const trilhaGerada = await page.locator('.step', { hasText: 'Colocando música e efeitos' }).textContent()
   assert.ok(/Tarde Lo-fi/.test(trilhaGerada), `trilha gerada: ${trilhaGerada}`)
-  assert.ok(existsSync(join(userData, 'sons', 'arquivos', 'musica-gerada-lofi.wav')), 'WAV da trilha gerada')
+  assert.ok(readdirSync(join(userData, 'sons', 'arquivos')).some((f) => /^musica-gerada-lofi(-\d)?\.wav$/.test(f)), 'WAV da trilha gerada')
 
   step('TikTok (simulado): conectar, rascunho e postagem com confirmação')
   await page.click('button[aria-label="Configurações"]')

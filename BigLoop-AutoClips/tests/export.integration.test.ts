@@ -189,13 +189,13 @@ describe.skipIf(!ffmpeg || !ffprobe)('Exportação com FFmpeg real', () => {
       const r = spawnSync(ffmpeg!, ['-v', 'error', '-ss', String(t), '-i', outputPath, '-frames:v', '1', '-vf', `crop=${crop},scale=1:1`, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
       return r.stdout[0]
     }
-    // título: caixa branca no topo no começo, some depois
+    // título no topo no começo (texto branco com contorno), some depois
     const titleArea = '700:60:190:200'
-    expect(region(0.6, titleArea)).toBeGreaterThan(region(5, titleArea) + 40)
+    expect(Math.abs(region(0.6, titleArea) - region(5, titleArea))).toBeGreaterThan(10)
     // barra de progresso: começo escuro, perto do fim clara (lado esquerdo do rodapé)
-    const barLeft = '300:8:0:1908'
-    const barRight = '200:8:860:1908'
-    expect(region(5.5, barLeft)).toBeGreaterThan(200)
+    const barLeft = '300:6:0:1913'
+    const barRight = '200:6:860:1913'
+    expect(region(5.5, barLeft)).toBeGreaterThan(170) // barra amarela
     expect(region(0.3, barRight)).toBeLessThan(region(5.5, barRight))
     // recorte andou da esquerda para a direita: quadros diferentes antes e depois
     const mid = '400:400:340:760'

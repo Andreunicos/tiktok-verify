@@ -4,7 +4,7 @@ import { basename, dirname, extname, join } from 'node:path'
 import { DEFAULT_FILLER_OPTIONS, removeFillers } from '../shared/fillers'
 import { applyPreset } from '../shared/presets'
 import { hashtags as localHashtags, localTitle } from '../shared/social'
-import { findPhrase, planEffects, planZooms, snapToSentences, toOutputTime as toOut, totalLength, withTeaser } from '../shared/smart'
+import { findPhrase, peakTeaserRange, planEffects, planZooms, removeDeadTime, snapToSentences, toOutputTime as toOut, totalLength, withTeaser } from '../shared/smart'
 import { outputSize } from '../shared/presets'
 import { suggestClips } from '../shared/suggest'
 import { formatTimecode } from '../shared/time'
@@ -44,7 +44,7 @@ const STEP_LABELS: Record<AutoStepKey, string> = {
   analisar: 'Analisando áudio e cenas',
   transcrever: 'Transcrevendo a fala',
   escolher: 'Escolhendo os melhores momentos',
-  limpar: 'Tirando “éé”, “hum” e pausas',
+  limpar: 'Tirando enrolação e tempo parado',
   trilha: 'Colocando música e efeitos',
   editar: 'Enquadramento, zoom e título',
   exportar: 'Criando os cortes'
@@ -65,7 +65,7 @@ export interface AutoDeps {
   /** Texto para redes com IA (opcional). Retorna null se desligada. */
   aiSocial?: (text: string, platform: string) => Promise<{ title: string; description: string; hashtags: string[] } | null>
   /** Música do clima pedido (da biblioteca ou baixada). Lança erro se não conseguir. */
-  pickMusic?: (mood: Mood, signal: AbortSignal, index?: number) => Promise<{ file: string; title: string; attribution: string | null } | null>
+  pickMusic?: (mood: Mood, signal: AbortSignal, index?: number) => Promise<{ file: string; title: string; attribution: string | null; generated?: boolean } | null>
   /** Arquivo de um efeito gerado (ex.: 'whoosh'). */
   pickEffect?: (key: string) => string | null
   /** IA (grátis ou Claude) que escolhe os melhores trechos e escreve os textos. null = desligada. */
@@ -270,7 +270,7 @@ export class AutoPilot extends EventEmitter {
 
       // 2. Analisar (reaproveita análise anterior)
       let analysis = d.getAnalysis(project.id)
-      if (analysis && Math.abs(analysis.durationSec - meta.durationSec) < 1 && analysis.reactions) {
+      if (analysis && Math.abs(analysis.durationSec - meta.durationSec) < 1 && analysis.reactions && (analysis.motion || !meta.video)) {
         this.skip(run, 'analisar', 'Já analisado antes')
         run.steps[1].state = 'ok'
       } else {
@@ -369,10 +369,10 @@ export class AutoPilot extends EventEmitter {
       })
       run.steps[3].detail = `${plural(clips.length, 'momento escolhido', 'momentos escolhidos')}${aiVia ? ` · IA: ${aiVia}` : ''}`
 
-      // 5. Limpar "éé" e pausas
+      // 5. Limpar: "éé"/"hum"/pausas (com transcrição) ou tempo morto sem som e sem ação (sem transcrição)
       const words = (transcript?.cues ?? []).flatMap((c) => c.words ?? [])
+      const hasWordTimes = words.length > 0 && !transcript?.engine.startsWith('importado')
       if (!o.cleanSpeech) this.skip(run, 'limpar', 'Desligado')
-      else if (words.length === 0 || transcript?.engine.startsWith('importado')) this.skip(run, 'limpar', 'Precisa de transcrição com tempo por palavra')
       else
         await this.step(run, 'limpar', signal, async () => {
           let removed = 0
@@ -384,26 +384,28 @@ export class AutoPilot extends EventEmitter {
           }
           for (const c of clips) {
             const original = c.ranges[0].endSec - c.ranges[0].startSec
-            const res = removeFillers(c.ranges[0], words, { ...DEFAULT_FILLER_OPTIONS, canCutPause })
-            const kept = original - res.removedSec
+            const ranges = hasWordTimes
+              ? removeFillers(c.ranges[0], words, { ...DEFAULT_FILLER_OPTIONS, canCutPause }).ranges
+              : removeDeadTime(c.ranges[0], silences, analysis!.motion)
+            const kept = totalLength(ranges)
             // Proteção: se tirar demais, mantém o corte original
             const safe = kept >= original * 0.75 && kept >= len.minSec * 0.8
-            if (res.ranges.length > 0 && res.removedSec > 0.2 && safe) {
-              c.ranges = res.ranges
-              removed += res.removedSec
-              c.durationSec = round(res.ranges.reduce((t, r) => t + r.endSec - r.startSec, 0))
+            if (ranges.length > 0 && original - kept > 0.2 && safe) {
+              c.ranges = ranges
+              removed += original - kept
+              c.durationSec = round(kept)
             }
           }
-          run.steps[4].detail = removed > 0 ? `${removed.toFixed(1)} s de enrolação removidos` : 'Nada para remover'
+          run.steps[4].detail = removed > 0 ? `${removed.toFixed(1)} s de enrolação/tempo parado removidos` : 'Nada para remover'
         })
 
       // Gancho no começo: repete a frase mais forte antes do corte (precisa de tempo por palavra)
       const smart = o.smartEdit !== false
       const teaserByClip = new Map<string, number>()
-      if (smart && words.length > 0) {
+      if (smart) {
         for (const c of clips) {
-          if (!c.hook) continue
-          const hookRange = findPhrase(c.hook, words, c.ranges)
+          // Frase de gancho da IA; sem ela, o momento mais intenso (som + ação) do próprio corte
+          const hookRange = (c.hook && words.length > 0 ? findPhrase(c.hook, words, c.ranges) : null) ?? peakTeaserRange(c.ranges, analysis!.rmsDb, analysis!.motion)
           const t = withTeaser(c.ranges, hookRange)
           if (t.teaserSec > 0 && totalLength(t.ranges) <= len.maxSec + 8) {
             c.ranges = t.ranges
@@ -427,7 +429,8 @@ export class AutoPilot extends EventEmitter {
               try {
                 const m = await d.pickMusic(o.music, signal, c.index - 1)
                 if (m) {
-                  extras.music = { file: m.file, volume: 0.3, duck: true, attribution: m.attribution }
+                  // Trilha gerada pelo app fica mais baixa (é o último recurso); música real um pouco mais alta
+                  extras.music = { file: m.file, volume: m.generated ? 0.16 : 0.28, duck: true, attribution: m.attribution }
                   if (m.attribution) c.description = [c.description, `🎵 ${m.attribution}`].filter(Boolean).join('\n')
                   if (!parts.includes(m.title)) parts.push(m.title)
                 }
@@ -500,13 +503,13 @@ export class AutoPilot extends EventEmitter {
                     fitByClip.set(c.segmentId, 'crop')
                     followed++
                   }
-                } else if (o.framing === 'auto') fitByClip.set(c.segmentId, 'blur')
+                } else if (o.framing === 'auto') fitByClip.set(c.segmentId, 'game')
               } catch (err) {
                 if (signal.aborted) throw new Cancelled()
                 d.log?.('warn', 'Enquadramento automático falhou', err)
               }
             }
-            if (o.framing === 'auto' && !fitByClip.has(c.segmentId)) fitByClip.set(c.segmentId, 'blur')
+            if (o.framing === 'auto' && !fitByClip.has(c.segmentId)) fitByClip.set(c.segmentId, 'game')
             if (smart && vertical) {
               v.zooms = planZooms(
                 { ranges: c.ranges, rmsDb: analysis!.rmsDb, reactions: analysis!.reactions, words, keywords: c.keywords, teaserSec: teaserByClip.get(c.segmentId) },
@@ -584,7 +587,7 @@ export class AutoPilot extends EventEmitter {
     return {
       ...base,
       mode: 'precise',
-      fit: o.platform === 'youtube' ? base.fit : o.framing === 'auto' ? 'blur' : o.framing,
+      fit: o.platform === 'youtube' ? base.fit : o.framing === 'auto' ? 'game' : o.framing,
       cropX: 0.5,
       speed: 1,
       fadeInSec: 0,

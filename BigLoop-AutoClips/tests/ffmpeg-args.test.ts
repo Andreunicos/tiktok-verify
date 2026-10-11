@@ -204,4 +204,11 @@ describe('helpers', () => {
     expect(sanitizeFileName('a:b/c*?.')).toBe('a_b_c__')
     expect(sanitizeFileName('CON')).toBe('_CON')
   })
+  it('jogo em destaque: faixa ampliada no meio sobre fundo desfocado', async () => {
+    const { aspectGraph } = await import('../src/shared/ffmpeg')
+    const g = aspectGraph('[i]', '[o]', { ...DEFAULT_EXPORT, aspect: '9:16', fit: 'game', cropX: 0.5 }, 1920, 1080)
+    expect(g).toContain('[fgsrc]scale=1620:912,crop=1080:912:(iw-1080)*0.500:0[fg]')
+    expect(g).toContain('boxblur=30:3')
+    expect(g).toContain('[bg][fg]overlay=0:(H-h)/2,setsar=1[o]')
+  })
 })
