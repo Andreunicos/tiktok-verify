@@ -120,7 +120,17 @@ const problems = []
 page.on('console', (m) => m.type() === 'error' && problems.push(`console: ${m.text()}`))
 page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`))
 await page.setViewportSize({ width: 1440, height: 900 })
-const shot = (name) => page.screenshot({ path: join(SHOTS, `${name}.png`) })
+// No xvfb, a captura às vezes falha logo após recarregar (janela ainda sem quadro); tenta de novo
+const shot = async (name) => {
+  for (let i = 1; ; i++) {
+    try {
+      return await page.screenshot({ path: join(SHOTS, `${name}.png`) })
+    } catch (e) {
+      if (i >= 5 || !/Unable to capture screenshot/.test(String(e))) throw e
+      await page.waitForTimeout(500 * i)
+    }
+  }
+}
 const mockOpen = (file) => app.evaluate(({ dialog }, f) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [f] }) }, file)
 const toast = (re, timeout = 30000) => page.waitForSelector(`.toast >> text=${re}`, { timeout })
 
