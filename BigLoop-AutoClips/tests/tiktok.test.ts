@@ -111,9 +111,10 @@ describe('TikTok (API simulada)', () => {
     // servidor local recebe o retorno (como faria o navegador)
     const port = 53000 + Math.floor(Math.random() * 1000)
     const wait = waitForAuthCode(port, 'estado-xyz', 5000)
+    const codeP = wait.promise
     const page = await fetch(`http://127.0.0.1:${port}/callback/?code=codigo-123&state=estado-xyz`)
     expect(await page.text()).toContain('Conectado')
-    const code = await wait.promise
+    const code = await codeP
     const tokens = await exchangeCode(cfg, code, pk.verifier)
     expect(tokens).toMatchObject({ accessToken: 'token-1', openId: 'u1' })
     session = new TikTokSession(cfg, tokens, (t) => (saved = t))
@@ -122,11 +123,13 @@ describe('TikTok (API simulada)', () => {
   it('retorno com state errado ou cancelado é recusado', async () => {
     const port = 54100 + Math.floor(Math.random() * 500)
     const w1 = waitForAuthCode(port, 'certo', 5000)
+    const e1 = expect(w1.promise).rejects.toThrow(/não confere/)
     await fetch(`http://127.0.0.1:${port}/callback?code=x&state=errado`)
-    await expect(w1.promise).rejects.toThrow(/não confere/)
+    await e1
     const w2 = waitForAuthCode(port + 1, 's', 5000)
+    const e2 = expect(w2.promise).rejects.toThrow(/cancelou/)
     await fetch(`http://127.0.0.1:${port + 1}/callback?error=access_denied&state=s`)
-    await expect(w2.promise).rejects.toThrow(/cancelou/)
+    await e2
   })
 
   it('token expirado é renovado sozinho e salvo', async () => {

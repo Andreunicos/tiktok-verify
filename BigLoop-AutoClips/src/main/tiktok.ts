@@ -174,6 +174,8 @@ export function waitForAuthCode(port: number, expectedState: string, timeoutMs =
       close()
     }, timeoutMs)
   })
+  // Evita "rejeição não tratada" se o retorno chegar antes de alguém aguardar a promessa
+  promise.catch(() => undefined)
   return { promise, close }
 }
 
