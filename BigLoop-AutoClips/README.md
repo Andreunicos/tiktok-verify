@@ -90,7 +90,7 @@ npm run dev
 |---|---|
 | `npm run dev` | App em modo desenvolvimento |
 | `npm run typecheck` | Verificação de tipos (main/preload e interface) |
-| `npm test` | 175 testes (Vitest), incluindo exportações reais com FFmpeg |
+| `npm test` | 165 testes (Vitest), incluindo exportações reais com FFmpeg |
 | `npm run test:e2e` | Abre o app Electron e percorre o fluxo completo (no Linux sem tela: `xvfb-run -a npm run test:e2e`) |
 | `npm run build` | Build de produção em `out/` |
 | `npm run dist:win` | Instalador NSIS local, sem publicar (rodar no Windows) |
