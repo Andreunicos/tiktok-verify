@@ -9,7 +9,8 @@ export const DEFAULT_WEIGHTS: Record<keyof SuggestionFeatures, number> = {
   scenes: 0.6,
   hook: 1,
   cleanStart: 0.6,
-  cleanEnd: 0.6
+  cleanEnd: 0.6,
+  reaction: 1.3
 }
 
 export const FEATURE_LABELS: Record<keyof SuggestionFeatures, string> = {
@@ -19,7 +20,8 @@ export const FEATURE_LABELS: Record<keyof SuggestionFeatures, string> = {
   scenes: 'Cenas',
   hook: 'Gancho',
   cleanStart: 'Início limpo',
-  cleanEnd: 'Final limpo'
+  cleanEnd: 'Final limpo',
+  reaction: 'Risada/grito'
 }
 
 const HOOK_WORDS =
@@ -74,6 +76,9 @@ export function suggestClips({ analysis, cues, options, weights }: SuggestInput)
 
   const silentSeconds = (a: number, b: number) =>
     analysis.silences.reduce((sum, s) => sum + overlap(s, { startSec: a, endSec: b }), 0)
+  const reactions = analysis.reactions ?? []
+  const reactionSeconds = (a: number, b: number) => reactions.reduce((sum, r) => sum + overlap(r, { startSec: a, endSec: b }), 0)
+  const reactionKinds = (a: number, b: number) => [...new Set(reactions.filter((r) => overlap(r, { startSec: a, endSec: b }) > 0.3).map((r) => r.kind))]
   const sceneCount = (a: number, b: number) => analysis.scenes.filter((t) => t > a && t < b).length
   const textIn = (a: number, b: number) =>
     sentenceCues
@@ -110,15 +115,18 @@ export function suggestClips({ analysis, cues, options, weights }: SuggestInput)
         scenes: clamp01(((sceneN / len) * 60) / 10),
         hook: hookText ? 1 : analysis.hasAudio ? clamp01((openingLoud - median) / spread) * 0.7 : 0,
         cleanStart: s === 0 || silenceEnds.has(s) || cueStarts.has(s) ? 1 : 0.4,
-        cleanEnd: e === D || silenceStarts.has(e) || cueEndsSentence.has(e) ? 1 : 0.4
+        cleanEnd: e === D || silenceStarts.has(e) || cueEndsSentence.has(e) ? 1 : 0.4,
+        reaction: clamp01(reactionSeconds(s, e) / 1.5)
       }
       const totalW = Object.values(w).reduce((x, y) => x + y, 0)
-      const score = Math.round(((Object.keys(features) as (keyof SuggestionFeatures)[]).reduce((x, f) => x + w[f] * features[f], 0) / totalW) * 100)
+      const score = Math.round(((Object.keys(features) as (keyof SuggestionFeatures)[]).reduce((x, f) => x + w[f] * (features[f] ?? 0), 0) / totalW) * 100)
 
       const reasons: string[] = []
       if (features.energy >= 0.6) reasons.push(`Energia do áudio ${(meanDb - median).toFixed(1)} dB acima da mediana do vídeo`)
       if (features.peak >= 0.75) reasons.push(`Pico de volume em ${formatTimecode(maxAt)} (grito, risada ou reação?)`)
       if (features.speech >= 0.85) reasons.push(`Fala contínua em ${Math.round(features.speech * 100)}% do trecho`)
+      const kinds = reactionKinds(s, e)
+      if (kinds.length) reasons.push(`Tem ${kinds.map((k) => (k === 'risada' ? 'risada' : 'grito/reação forte')).join(' e ')} no trecho`)
       if (sceneN >= 2) reasons.push(`${sceneN} mudanças de cena — visual dinâmico`)
       if (hookText) reasons.push(`Começa com gancho: “${firstText.slice(0, 60)}${firstText.length > 60 ? '…' : ''}”`)
       else if (features.hook >= 0.6) reasons.push('Começo forte (volume alto nos 3 primeiros segundos)')
@@ -155,7 +163,8 @@ export function learnWeights(
 ): Record<keyof SuggestionFeatures, number> {
   const w = { ...DEFAULT_WEIGHTS, ...(weights ?? {}) }
   for (const k of Object.keys(features) as (keyof SuggestionFeatures)[]) {
-    const delta = rate * (features[k] - 0.5) * (approved ? 1 : -1)
+    if (typeof features[k] !== 'number') continue
+    const delta = rate * ((features[k] as number) - 0.5) * (approved ? 1 : -1)
     w[k] = Math.round(Math.min(3, Math.max(0.1, w[k] + delta)) * 1000) / 1000
   }
   return w

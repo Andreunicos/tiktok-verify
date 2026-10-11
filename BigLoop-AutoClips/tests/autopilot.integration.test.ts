@@ -32,7 +32,7 @@ function makeLive(path: string) {
   if (r.status !== 0) throw new Error(r.stderr.toString())
 }
 
-function setup(withWhisper: boolean, sound?: { music: string; fx: string; attribution?: string | null; fail?: boolean }) {
+function setup(withWhisper: boolean, sound?: { music: string; fx: string; attribution?: string | null; fail?: boolean }, extra: Partial<AutoDeps> = {}) {
   const projects = new ProjectStore(join(dir, 'projetos'))
   const outDir = join(dir, withWhisper ? 'cortes-com-legenda' : 'cortes')
   const queue = new JobQueue(null, (job, report) => startExport(job.request, { ffmpegPath: ffmpeg!, onProgress: (_s, r, e) => report(r, e) }), { concurrency: 2 })
@@ -65,7 +65,8 @@ function setup(withWhisper: boolean, sound?: { music: string; fx: string; attrib
       const tmp = `${path}.tmp`
       await writeFile(tmp, text, 'utf8')
       return moveNoOverwrite(tmp, path)
-    }
+    },
+    ...extra
   }
   const pilot = new AutoPilot(deps, null)
   queue.on('progress', (j) => pilot.jobUpdated(j))
@@ -104,7 +105,7 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     const run = pilot.start(live, opts())
     const done = await waitDone(pilot, run.id)
     expect(done.state).toBe('concluído')
-    expect(done.steps.map((s) => `${s.key}:${s.state}`)).toEqual(['ler:ok', 'analisar:ok', 'transcrever:pulado', 'escolher:ok', 'limpar:pulado', 'trilha:pulado', 'exportar:ok'])
+    expect(done.steps.map((s) => `${s.key}:${s.state}`)).toEqual(['ler:ok', 'analisar:ok', 'transcrever:pulado', 'escolher:ok', 'limpar:pulado', 'trilha:pulado', 'editar:ok', 'exportar:ok'])
     expect(done.clips).toHaveLength(3)
     expect(done.notes.join(' ')).toMatch(/sem legenda/)
     const folder = join(outDir, 'minha live')
@@ -159,6 +160,41 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     const done = await waitDone(pilot, pilot.start(live, opts({ count: 1, music: 'calma', effects: false })).id)
     expect(done.state).toBe('concluído')
     expect(done.notes.join(' ')).toMatch(/Sem música de fundo: sem internet/)
+  })
+
+  it('IA escolhe os trechos e escreve os textos; edição turbinada aplica título, zoom e barra', async () => {
+    const fx = join(dir, 'fx.wav')
+    spawnSync(ffmpeg!, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=1000:duration=0.3', fx])
+    let seen = 0
+    const { pilot } = setup(true, { music: '', fx }, {
+      aiPlan: async (_platform, count, candidates) => {
+        seen = candidates.length
+        expect(count).toBe(2)
+        return {
+          via: 'IA de teste',
+          clips: candidates.map((c, i) => ({ id: c.id, aiScore: 100 - i * 10, title: `Título da IA ${i + 1}`, description: 'Descrição da IA', hashtags: ['#ia', '#teste'], hook: '', keywords: ['jogar'] }))
+        }
+      }
+    })
+    const done = await waitDone(pilot, pilot.start(live, opts({ count: 2, effects: true })).id)
+    expect(done.state).toBe('concluído')
+    expect(seen).toBeGreaterThan(2) // pediu mais candidatos para a IA escolher
+    expect(done.steps.find((s) => s.key === 'escolher')!.detail).toMatch(/IA: IA de teste/)
+    expect(done.clips.every((c) => c.title.startsWith('Título da IA'))).toBe(true)
+    expect(done.clips[0].hashtags).toEqual(['#ia', '#teste'])
+    expect(done.clips[0].reasons[0]).toMatch(/IA: nota/)
+    expect(done.steps.find((s) => s.key === 'trilha')!.detail).toMatch(/efeito/)
+    expect(done.steps.find((s) => s.key === 'editar')!.detail).toMatch(/título e barra/)
+    expect(readFileSync(done.textsFile!, 'utf8')).toMatch(/Descrição da IA/)
+    for (const c of done.clips) expect(probeJson(c.outputPath!).streams.find((s: { codec_type: string }) => s.codec_type === 'video').height).toBe(1920)
+  })
+
+  it('IA fora do ar: avisa e escolhe pelas regras locais', async () => {
+    const { pilot } = setup(true, undefined, { aiPlan: async () => Promise.reject(new Error('Limite grátis do Groq atingido por agora.')) })
+    const done = await waitDone(pilot, pilot.start(live, opts({ count: 1 })).id)
+    expect(done.state).toBe('concluído')
+    expect(done.notes.join(' ')).toMatch(/IA indisponível agora \(Limite grátis do Groq/)
+    expect(done.clips).toHaveLength(1)
   })
 
   it('cancelar para tudo', async () => {

@@ -138,6 +138,21 @@ export interface CutRequest {
   sequence?: number
   /** Música de fundo e efeitos sonoros (tempos no corte final). */
   audioExtras?: AudioExtras
+  /** Edição visual automática (tempos no corte final). */
+  visual?: VisualExtras
+}
+
+export interface VisualExtras {
+  /** Zooms rápidos ("punch-in"). */
+  zooms?: { atSec: number; durSec: number; scale: number }[]
+  /** Posição do recorte ao longo do tempo (0 = esquerda, 1 = direita); só no modo "Preencher a tela". */
+  track?: { t: number; x: number }[]
+  /** Barra de progresso no rodapé. */
+  progressBar?: boolean
+  /** Título grande no topo nos primeiros segundos. */
+  title?: string
+  /** Palavras que ganham destaque (cor e tamanho) na legenda. */
+  keywords?: string[]
 }
 
 export interface AudioExtras {
@@ -205,6 +220,8 @@ export interface AnalysisResult {
   scenes: number[]
   hasAudio: boolean
   createdAt: number
+  /** Risadas e gritos detectados no áudio (análises antigas não têm). */
+  reactions?: { startSec: number; endSec: number; kind: 'risada' | 'grito' }[]
 }
 
 export interface SuggestionFeatures {
@@ -215,6 +232,8 @@ export interface SuggestionFeatures {
   hook: number
   cleanStart: number
   cleanEnd: number
+  /** Risada ou grito dentro do trecho. */
+  reaction?: number
 }
 
 export interface Suggestion {
@@ -300,6 +319,13 @@ export interface AppSettings {
   aiEnabled: boolean
   aiKeyEnc: string
   aiModel: string
+  /** Qual IA usar: grátis na nuvem (padrão), Claude (pago) ou nenhuma. */
+  aiProvider: 'gratis' | 'claude' | 'desligada'
+  groqKeyEnc: string
+  cerebrasKeyEnc: string
+  openrouterKeyEnc: string
+  /** Já aplicou os novos padrões do modo automático (enquadramento inteligente e edição turbinada). */
+  smartDefaultsV1: boolean
   onboardingDone: boolean
   /** Verifica e instala atualizações sozinho ao abrir o app. */
   autoUpdate: boolean
@@ -409,15 +435,17 @@ export interface AutoOptions {
   subtitles: boolean
   /** Tira "éé", "hum" e pausas longas (precisa de transcrição com tempo por palavra). */
   cleanSpeech: boolean
-  /** blur = vídeo inteiro com fundo desfocado; crop = preenche a tela cortando as laterais. */
-  framing: 'blur' | 'crop'
+  /** auto = segue a pessoa quando ela aparece grande, senão vídeo inteiro; blur = vídeo inteiro com fundo desfocado; crop = preenche a tela. */
+  framing: 'auto' | 'blur' | 'crop'
   /** Música de fundo pelo clima, ou nenhuma. */
   music: Mood | 'nenhuma'
-  /** Efeito de entrada (whoosh). */
+  /** Efeitos sonoros nos momentos certos (entrada, palavras de destaque, picos). */
   effects: boolean
+  /** Edição turbinada: gancho no começo, zooms nos picos, título na tela e barra de progresso. Padrão: ligado. */
+  smartEdit?: boolean
 }
 
-export type AutoStepKey = 'ler' | 'analisar' | 'transcrever' | 'escolher' | 'limpar' | 'trilha' | 'exportar'
+export type AutoStepKey = 'ler' | 'analisar' | 'transcrever' | 'escolher' | 'limpar' | 'trilha' | 'editar' | 'exportar'
 
 export interface AutoStep {
   key: AutoStepKey
@@ -522,3 +550,5 @@ export interface UpdateStatus {
 }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
+
+export type SecretKind = 'obs' | 'ai' | 'groq' | 'cerebras' | 'openrouter'

@@ -142,4 +142,4 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 
 **Resumo:** 70 ✅ · 22 🟡 · 8 ❌
 
-Extras fora da lista original: biblioteca de sons (Openverse + efeitos gerados), trilhas geradas pelo app (funcionam sem internet), música com ducking, efeitos sonoros.
+Extras fora da lista original: biblioteca de sons (Openverse + 27 efeitos gerados), 15 trilhas geradas pelo app (funcionam sem internet), música com ducking, efeitos nos momentos certos, IA grátis na nuvem (Groq/Cerebras/OpenRouter), detecção de risadas e gritos, cortes em frases inteiras, gancho no começo, zoom nos picos, título na tela, barra de progresso, palavras-chave na legenda e enquadramento que segue a pessoa.

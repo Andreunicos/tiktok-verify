@@ -97,8 +97,21 @@ const STYLES: Record<Mood, Style> = {
 
 export const MUSIC_MOODS = Object.keys(STYLES) as Mood[]
 
-export function generatedMusicTitle(mood: Mood): string {
-  return STYLES[mood].title
+/** Quantas variações de cada clima o app gera (tom, andamento e ordem dos acordes diferentes). */
+export const MUSIC_VARIANTS = 3
+
+export function generatedMusicTitle(mood: Mood, variant = 0): string {
+  return `${STYLES[mood].title}${['', ' II', ' III'][variant] ?? ` ${variant + 1}`}`
+}
+
+/** Aplica a variação: transpõe, muda o andamento e gira a progressão de acordes. */
+function variantStyle(base: Style, variant: number): Style {
+  if (!variant) return base
+  const shift = [0, 5, -3][variant % 3]
+  const rot = variant % base.chords.length
+  const chords = [...base.chords.slice(rot), ...base.chords.slice(0, rot)].map((c) => c.map((n) => n + shift))
+  const rotate = (p: string, k: number) => (p.length === 16 ? p.slice(k) + p.slice(0, k) : p)
+  return { ...base, chords, bpm: base.bpm + [0, -6, 6][variant % 3], arp: rotate(base.arp, variant * 2), hat: variant === 2 ? base.hat.replace(/\./g, (m, i: number) => (i % 4 === 3 ? 's' : m)) : base.hat }
 }
 
 const vel = (c: string | undefined): number => (c === 'x' ? 1 : c === 'o' ? 0.6 : c === 's' ? 0.3 : 0)
@@ -139,14 +152,14 @@ export interface RenderedMusic {
 }
 
 /** Renderiza a trilha de um clima: 8 compassos (a progressão de 4 acordes duas vezes). */
-export function renderMusic(mood: Mood, sampleRate = 48000): RenderedMusic {
-  const st = STYLES[mood]
+export function renderMusic(mood: Mood, sampleRate = 48000, variant = 0): RenderedMusic {
+  const st = variantStyle(STYLES[mood], variant)
   const bars = st.chords.length * 2
   const stepSec = 60 / st.bpm / 4
   const n = Math.round(bars * 16 * stepSec * sampleRate)
   const L = new Float32Array(n)
   const R = new Float32Array(n)
-  const rand = rng(0xb16 + mood.length * 7919)
+  const rand = rng(0xb16 + mood.length * 7919 + variant * 104729)
 
   /** Soma uma voz no buffer, dando a volta no fim para o loop ficar perfeito. */
   const voice = (startSec: number, durSec: number, gainL: number, gainR: number, sample: (t: number) => number): void => {

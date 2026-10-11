@@ -4,6 +4,8 @@ import { basename, dirname, extname, join } from 'node:path'
 import { DEFAULT_FILLER_OPTIONS, removeFillers } from '../shared/fillers'
 import { applyPreset } from '../shared/presets'
 import { hashtags as localHashtags, localTitle } from '../shared/social'
+import { findPhrase, planEffects, planZooms, snapToSentences, toOutputTime as toOut, totalLength, withTeaser } from '../shared/smart'
+import { outputSize } from '../shared/presets'
 import { suggestClips } from '../shared/suggest'
 import { formatTimecode } from '../shared/time'
 import type {
@@ -24,8 +26,11 @@ import type {
   Range,
   Segment,
   SuggestionFeatures,
-  Transcript
+  Transcript,
+  VisualExtras
 } from '../shared/types'
+import type { TrackDecision } from '../shared/track'
+import { blendScore, type PlanCandidate, type PlannedClip } from './brain'
 import { readJson, writeJsonAtomic } from './jsonFile'
 
 export const LENGTHS: Record<AutoLength, { minSec: number; maxSec: number; label: string }> = {
@@ -41,6 +46,7 @@ const STEP_LABELS: Record<AutoStepKey, string> = {
   escolher: 'Escolhendo os melhores momentos',
   limpar: 'Tirando “éé”, “hum” e pausas',
   trilha: 'Colocando música e efeitos',
+  editar: 'Enquadramento, zoom e título',
   exportar: 'Criando os cortes'
 }
 
@@ -59,9 +65,13 @@ export interface AutoDeps {
   /** Texto para redes com IA (opcional). Retorna null se desligada. */
   aiSocial?: (text: string, platform: string) => Promise<{ title: string; description: string; hashtags: string[] } | null>
   /** Música do clima pedido (da biblioteca ou baixada). Lança erro se não conseguir. */
-  pickMusic?: (mood: Mood, signal: AbortSignal) => Promise<{ file: string; title: string; attribution: string | null } | null>
+  pickMusic?: (mood: Mood, signal: AbortSignal, index?: number) => Promise<{ file: string; title: string; attribution: string | null } | null>
   /** Arquivo de um efeito gerado (ex.: 'whoosh'). */
   pickEffect?: (key: string) => string | null
+  /** IA (grátis ou Claude) que escolhe os melhores trechos e escreve os textos. null = desligada. */
+  aiPlan?: (platform: string, count: number, candidates: PlanCandidate[]) => Promise<{ via: string; clips: PlannedClip[] } | null>
+  /** Decide o enquadramento 9:16 seguindo a pessoa. */
+  track?: (path: string, span: Range, srcW: number, srcH: number, cropFrac: number, signal: AbortSignal) => Promise<TrackDecision>
   enqueue(req: CutRequest): Job
   cancelJob(id: string): void
   getJob(id: string): Job | undefined
@@ -260,7 +270,7 @@ export class AutoPilot extends EventEmitter {
 
       // 2. Analisar (reaproveita análise anterior)
       let analysis = d.getAnalysis(project.id)
-      if (analysis && Math.abs(analysis.durationSec - meta.durationSec) < 1) {
+      if (analysis && Math.abs(analysis.durationSec - meta.durationSec) < 1 && analysis.reactions) {
         this.skip(run, 'analisar', 'Já analisado antes')
         run.steps[1].state = 'ok'
       } else {
@@ -294,38 +304,70 @@ export class AutoPilot extends EventEmitter {
         }
       }
 
-      // 4. Escolher
+      // 4. Escolher: regras locais acham candidatos; a IA (se ativa) escolhe entre eles e escreve os textos
       const len = LENGTHS[o.length]
+      const cues = transcript?.cues ?? []
+      let aiVia = ''
       const clips = await this.step(run, 'escolher', signal, async () => {
-        const sugg = suggestClips({ analysis: analysis!, cues: transcript?.cues, options: { minSec: len.minSec, maxSec: len.maxSec, count: o.count }, weights: d.learnedWeights() })
-        // Guarda as sugestões no projeto: aparecem na aba Sugestões do editor avançado
-        d.updateProject(project.id, { suggestions: sugg })
-        const ranges =
-          sugg.length > 0
-            ? sugg.map((s) => ({ s, range: { startSec: round(Math.max(0, s.startSec - 0.15)), endSec: round(Math.min(meta.durationSec, s.endSec + 0.3)) } }))
-            : [{ s: null, range: { startSec: 0, endSec: round(Math.min(meta.durationSec, len.maxSec)) } }]
-        if (sugg.length === 0) run.notes.push('O vídeo é curto para a duração escolhida; fiz um corte do começo.')
-        return ranges.map(({ s, range }, i): AutoClip & { ranges: Range[] } => {
-          const text = clipText(transcript?.cues, [range])
-          const title = (text && localTitle(text)) || `Melhor momento ${i + 1}`
+        const wantAi = !!d.aiPlan && cues.length > 0
+        const pool = suggestClips({ analysis: analysis!, cues, options: { minSec: len.minSec, maxSec: len.maxSec, count: wantAi ? Math.min(15, o.count * 3) : o.count }, weights: d.learnedWeights() })
+        // Não corta no meio da frase
+        const snapped = pool.map((sg) => {
+          const raw = { startSec: Math.max(0, sg.startSec - 0.15), endSec: Math.min(meta.durationSec, sg.endSec + 0.3) }
+          const range = cues.length ? snapToSentences(raw, cues, meta.durationSec, { maxBefore: 2.5, maxAfter: 3.5, maxLength: len.maxSec + 6 }) : raw
+          return { s: sg, range: { startSec: round(range.startSec), endSec: round(range.endSec) } }
+        })
+        let planned = new Map<string, PlannedClip>()
+        if (wantAi && snapped.length > 0) {
+          try {
+            const cands: PlanCandidate[] = snapped.map(({ s: sg, range }) => ({ id: sg.id, startSec: range.startSec, endSec: range.endSec, ruleScore: sg.score, text: clipText(cues, [range]) }))
+            const res = await d.aiPlan!(PLATFORM_LABEL[o.platform], o.count, cands)
+            if (res) {
+              planned = new Map(res.clips.map((c) => [c.id, c]))
+              aiVia = res.via
+            }
+          } catch (err) {
+            if (signal.aborted) throw new Cancelled()
+            run.notes.push(`IA indisponível agora (${(err as Error).message}); escolhi só pelas regras locais.`)
+          }
+        }
+        const ranked = snapped
+          .map((x) => ({ ...x, plan: planned.get(x.s.id), score: blendScore(x.s.score, planned.get(x.s.id)?.aiScore) }))
+          .sort((p1, p2) => p2.score - p1.score || p1.range.startSec - p2.range.startSec)
+          .slice(0, o.count)
+          .sort((p1, p2) => p1.range.startSec - p2.range.startSec)
+        d.updateProject(project.id, { suggestions: pool.slice(0, Math.max(o.count, 8)) })
+        const chosen =
+          ranked.length > 0 ? ranked : [{ s: null, plan: undefined, score: 0, range: { startSec: 0, endSec: round(Math.min(meta.durationSec, len.maxSec)) } }]
+        if (ranked.length === 0) run.notes.push('O vídeo é curto para a duração escolhida; fiz um corte do começo.')
+        return chosen.map(({ s: sg, plan, score, range }, i): AutoClip & { ranges: Range[]; hook: string; keywords: string[]; screenTitle: string } => {
+          const text = clipText(cues, [range])
+          const local = (text && localTitle(text)) || `Melhor momento ${i + 1}`
+          const title = plan?.title || local
           return {
             segmentId: randomUUID(),
             index: i + 1,
             title,
-            description: '',
-            hashtags: localHashtags(text || run.fileName.replace(/\.[^.]+$/, '').replace(/[\d_-]+/g, ' '), ['cortes', PLATFORM_LABEL[o.platform].toLowerCase()]),
+            description: plan?.description ?? '',
+            hashtags: plan?.hashtags.length
+              ? plan.hashtags
+              : localHashtags(text || run.fileName.replace(/\.[^.]+$/, '').replace(/[\d_-]+/g, ' '), ['cortes', PLATFORM_LABEL[o.platform].toLowerCase()]),
             startSec: range.startSec,
             endSec: range.endSec,
             durationSec: round(range.endSec - range.startSec),
-            score: s?.score ?? 0,
-            reasons: s?.reasons ?? [],
+            score,
+            reasons: [...(plan ? [`IA: nota ${Math.round(plan.aiScore)} (${aiVia})`] : []), ...(sg?.reasons ?? [])],
             status: 'pendente',
             ratio: 0,
-            ranges: [range]
+            ranges: [range],
+            hook: plan?.hook ?? '',
+            keywords: plan?.keywords ?? [],
+            // Título na tela só quando é curto e bom (da IA ou a primeira frase com gancho)
+            screenTitle: plan?.title && plan.title.length <= 60 ? plan.title : local.length >= 12 && local.length <= 55 && /[?!]/.test(local) ? local : ''
           }
         })
       })
-      run.steps[3].detail = plural(clips.length, 'momento escolhido', 'momentos escolhidos')
+      run.steps[3].detail = `${plural(clips.length, 'momento escolhido', 'momentos escolhidos')}${aiVia ? ` · IA: ${aiVia}` : ''}`
 
       // 5. Limpar "éé" e pausas
       const words = (transcript?.cues ?? []).flatMap((c) => c.words ?? [])
@@ -355,18 +397,35 @@ export class AutoPilot extends EventEmitter {
           run.steps[4].detail = removed > 0 ? `${removed.toFixed(1)} s de enrolação removidos` : 'Nada para remover'
         })
 
+      // Gancho no começo: repete a frase mais forte antes do corte (precisa de tempo por palavra)
+      const smart = o.smartEdit !== false
+      const teaserByClip = new Map<string, number>()
+      if (smart && words.length > 0) {
+        for (const c of clips) {
+          if (!c.hook) continue
+          const hookRange = findPhrase(c.hook, words, c.ranges)
+          const t = withTeaser(c.ranges, hookRange)
+          if (t.teaserSec > 0 && totalLength(t.ranges) <= len.maxSec + 8) {
+            c.ranges = t.ranges
+            c.durationSec = round(totalLength(t.ranges))
+            teaserByClip.set(c.segmentId, t.teaserSec)
+          }
+        }
+      }
+
       // 6. Música e efeitos
       const extrasByClip = new Map<string, AudioExtras>()
       if (o.music === 'nenhuma' && !o.effects) this.skip(run, 'trilha', 'Desligado')
       else
         await this.step(run, 'trilha', signal, async () => {
           const parts: string[] = []
+          let fxCount = 0
           let musicFailed = false
           for (const c of clips) {
             const extras: AudioExtras = {}
             if (o.music !== 'nenhuma' && d.pickMusic && !musicFailed) {
               try {
-                const m = await d.pickMusic(o.music, signal)
+                const m = await d.pickMusic(o.music, signal, c.index - 1)
                 if (m) {
                   extras.music = { file: m.file, volume: 0.3, duck: true, attribution: m.attribution }
                   if (m.attribution) c.description = [c.description, `🎵 ${m.attribution}`].filter(Boolean).join('\n')
@@ -379,16 +438,25 @@ export class AutoPilot extends EventEmitter {
               }
             }
             if (o.effects && d.pickEffect) {
-              const whoosh = d.pickEffect('whoosh')
-              if (whoosh) extras.effects = [{ file: whoosh, atSec: 0, volume: 0.35 }]
+              // Efeitos no momento certo: entrada, volta do gancho, "ding" nas palavras de destaque, impacto no pico
+              const planned = planEffects(
+                { ranges: c.ranges, rmsDb: analysis!.rmsDb, reactions: analysis!.reactions, words, keywords: c.keywords, teaserSec: teaserByClip.get(c.segmentId) },
+                (key) => !!d.pickEffect!(key)
+              )
+              const list = planned.flatMap((p) => {
+                const file = d.pickEffect!(p.key)
+                return file ? [{ file, atSec: p.atSec, volume: p.volume }] : []
+              })
+              if (list.length) extras.effects = list
+              fxCount += list.length
             }
             extrasByClip.set(c.segmentId, extras)
           }
-          run.steps.find((s) => s.key === 'trilha')!.detail = [parts.length ? `música: ${parts.slice(0, 2).join(', ')}` : '', o.effects ? 'efeito de entrada' : ''].filter(Boolean).join(' · ') || 'nada encontrado'
+          run.steps.find((s) => s.key === 'trilha')!.detail = [parts.length ? `música: ${parts.slice(0, 2).join(', ')}` : '', fxCount ? plural(fxCount, 'efeito', 'efeitos') : ''].filter(Boolean).join(' · ') || 'nada encontrado'
         })
 
       // Textos para redes (IA opcional; se falhar usa os locais)
-      if (d.aiSocial && transcript?.cues.length) {
+      if (d.aiSocial && transcript?.cues.length && !aiVia) {
         for (const c of clips) {
           const text = clipText(transcript.cues, c.ranges)
           if (!text) continue
@@ -402,29 +470,83 @@ export class AutoPilot extends EventEmitter {
         }
       }
 
+      // 7. Edição visual: enquadramento que segue a pessoa, zooms nos picos, título e barra de progresso
+      const options = this.exportOptions(o, !!transcript?.cues.length)
+      const visualByClip = new Map<string, VisualExtras>()
+      const fitByClip = new Map<string, ExportOptions['fit']>()
+      const vertical = options.aspect === '9:16' || options.aspect === '4:5'
+      if (!smart && o.framing !== 'auto') this.skip(run, 'editar', 'Desligado')
+      else
+        await this.step(run, 'editar', signal, async (setRatio) => {
+          const [OW, OH] = outputSize(options.aspect, meta.video!.width, meta.video!.height)
+          const cover = Math.max(OW / meta.video!.width, OH / meta.video!.height)
+          const cropFrac = Math.min(1, OW / (meta.video!.width * cover))
+          let followed = 0
+          let zoomed = 0
+          for (const [i, c] of clips.entries()) {
+            const v: VisualExtras = {}
+            if (vertical && o.platform !== 'youtube' && (o.framing === 'auto' || o.framing === 'crop') && cropFrac < 0.95 && d.track) {
+              try {
+                const span = { startSec: Math.min(...c.ranges.map((r) => r.startSec)), endSec: Math.max(...c.ranges.map((r) => r.endSec)) }
+                const dec = await d.track(run.path, span, meta.video!.width, meta.video!.height, cropFrac, signal)
+                if (dec.follow) {
+                  // pontos da origem → tempo do corte
+                  const pts = dec.points.flatMap((p) => {
+                    const t = toOut(p.t, c.ranges)
+                    return t === null ? [] : [{ t, x: p.x }]
+                  })
+                  if (pts.length) {
+                    v.track = pts
+                    fitByClip.set(c.segmentId, 'crop')
+                    followed++
+                  }
+                } else if (o.framing === 'auto') fitByClip.set(c.segmentId, 'blur')
+              } catch (err) {
+                if (signal.aborted) throw new Cancelled()
+                d.log?.('warn', 'Enquadramento automático falhou', err)
+              }
+            }
+            if (o.framing === 'auto' && !fitByClip.has(c.segmentId)) fitByClip.set(c.segmentId, 'blur')
+            if (smart && vertical) {
+              v.zooms = planZooms(
+                { ranges: c.ranges, rmsDb: analysis!.rmsDb, reactions: analysis!.reactions, words, keywords: c.keywords, teaserSec: teaserByClip.get(c.segmentId) },
+                totalLength(c.ranges)
+              )
+              if (v.zooms.length) zoomed++
+              v.progressBar = true
+              if (c.screenTitle) v.title = c.screenTitle
+              if (c.keywords.length) v.keywords = c.keywords
+            }
+            visualByClip.set(c.segmentId, v)
+            setRatio((i + 1) / clips.length)
+          }
+          run.steps.find((s) => s.key === 'editar')!.detail =
+            [followed ? `${followed} seguindo a pessoa` : '', zoomed ? plural(zoomed, 'corte com zoom', 'cortes com zoom') : '', smart ? 'título e barra de progresso' : ''].filter(Boolean).join(' · ') || 'nada a ajustar'
+        })
+
       // Salva os trechos no projeto (dá para ajustar depois no editor avançado)
       const segments: Segment[] = clips.map((c) => ({ id: c.segmentId, name: c.title.slice(0, 60), ranges: c.ranges, createdAt: Date.now(), origin: 'suggestion' }))
       const existing = d.getProject(project.id)?.segments ?? []
       d.updateProject(project.id, { segments: [...existing, ...segments] })
 
-      // 7. Exportar
+      // 8. Exportar
       const st = run.steps.find((s) => s.key === 'exportar')!
       st.state = 'rodando'
       st.ratio = 0
-      const options = this.exportOptions(o, !!transcript?.cues.length)
-      run.clips = clips.map(({ ranges: _r, ...c }) => c)
+      run.clips = clips.map(({ ranges: _r, hook: _h, keywords: _k, screenTitle: _t, ...c }) => c)
       for (const c of clips) {
         if (signal.aborted) throw new Cancelled()
         const req: CutRequest = {
           inputPath: run.path,
           outputDir: d.outputDir(),
           ranges: c.ranges,
-          options,
+          options: fitByClip.has(c.segmentId) ? { ...options, fit: fitByClip.get(c.segmentId)! } : options,
           segmentName: c.title.slice(0, 60),
           presetName: PLATFORM_LABEL[o.platform],
           cues: transcript?.cues,
           sequence: c.index,
           audioExtras: extrasByClip.get(c.segmentId),
+          visual: visualByClip.get(c.segmentId),
           source: { durationSec: meta.durationSec, width: meta.video!.width, height: meta.video!.height, fps: meta.video!.fps, audioTracks: meta.audioTracks.length }
         }
         const job = d.enqueue(req)
@@ -462,7 +584,7 @@ export class AutoPilot extends EventEmitter {
     return {
       ...base,
       mode: 'precise',
-      fit: o.platform === 'youtube' ? base.fit : o.framing,
+      fit: o.platform === 'youtube' ? base.fit : o.framing === 'auto' ? 'blur' : o.framing,
       cropX: 0.5,
       speed: 1,
       fadeInSec: 0,

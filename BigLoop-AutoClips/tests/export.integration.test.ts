@@ -165,6 +165,43 @@ describe.skipIf(!ffmpeg || !ffprobe)('Exportação com FFmpeg real', () => {
     expect(band(220, 6.6, 7.4)).toBeGreaterThan(-60) // música em loop até o fim
   })
 
+  it('edição turbinada: recorte que acompanha, zoom, barra de progresso e título', async () => {
+    const { outputPath, meta } = await exportOk(
+      make(
+        { aspect: '9:16', fit: 'crop', fadeInSec: 0, fadeOutSec: 0, subtitles: 'burn' },
+        {
+          ranges: [{ startSec: 0, endSec: 6 }],
+          outputDir: join(dir, 'turbinada'),
+          visual: {
+            track: [{ t: 0, x: 0 }, { t: 3, x: 0 }, { t: 3.5, x: 1 }],
+            zooms: [{ atSec: 1, durSec: 1.5, scale: 1.3 }],
+            progressBar: true,
+            title: 'Título de teste'
+          }
+        }
+      )
+    )
+    expect(meta.video).toMatchObject({ width: 1080, height: 1920 })
+    expect(Math.abs(meta.durationSec - 6)).toBeLessThan(0.15)
+    decodesCleanly(outputPath)
+    // média de brilho de uma região num instante
+    const region = (t: number, crop: string) => {
+      const r = spawnSync(ffmpeg!, ['-v', 'error', '-ss', String(t), '-i', outputPath, '-frames:v', '1', '-vf', `crop=${crop},scale=1:1`, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
+      return r.stdout[0]
+    }
+    // título: caixa branca no topo no começo, some depois
+    const titleArea = '700:60:190:200'
+    expect(region(0.6, titleArea)).toBeGreaterThan(region(5, titleArea) + 40)
+    // barra de progresso: começo escuro, perto do fim clara (lado esquerdo do rodapé)
+    const barLeft = '300:8:0:1908'
+    const barRight = '200:8:860:1908'
+    expect(region(5.5, barLeft)).toBeGreaterThan(200)
+    expect(region(0.3, barRight)).toBeLessThan(region(5.5, barRight))
+    // recorte andou da esquerda para a direita: quadros diferentes antes e depois
+    const mid = '400:400:340:760'
+    expect(Math.abs(region(2.8, mid) - region(5, mid))).toBeGreaterThan(3)
+  })
+
   it('respeita limite de tamanho', async () => {
     makeVideo(ffmpeg!, join(dir, 'grande.mp4'), 6, { size: '1280x720' })
     const { outputPath } = await exportOk(

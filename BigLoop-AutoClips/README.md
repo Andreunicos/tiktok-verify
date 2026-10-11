@@ -56,8 +56,13 @@ tamanho, enquadramento) já vêm marcadas com as últimas usadas.
 - **OBS**: conexão por WebSocket, atalho global para marcar momentos durante a live, importação automática ao
   parar de gravar; **pasta monitorada** que só importa arquivos que terminaram de ser gravados.
 - **Premiere / DaVinci**: exporta sequência FCP XML e EDL apontando para a gravação original.
-- **IA opcional e paga** (Claude, com a sua chave): títulos, descrições, hashtags e tradução de legendas. Há
-  versão local gratuita para títulos e hashtags.
+- **IA grátis na nuvem** (Groq, com Cerebras e OpenRouter de reserva; chave grátis do usuário) ou **Claude**
+  (pago): escolhe os trechos com história completa, acha a frase de gancho, destaca palavras e escreve título,
+  descrição e hashtags. Só texto é enviado. Sem IA, tudo funciona com as regras locais.
+- **Edição turbinada** no modo automático: não corta no meio da frase, detecta risadas e gritos, repete o gancho
+  no começo, zoom rápido nos picos, título na tela, barra de progresso, palavras-chave coloridas na legenda,
+  enquadramento que segue a pessoa (ou vídeo inteiro quando é webcam pequena), 27 efeitos sonoros gerados pelo
+  app colocados nos momentos certos e 15 trilhas próprias (5 climas × 3 variações).
 - Tema claro/escuro, atalhos (`?`), bandeja, notificações, relatório de diagnóstico sem dados pessoais.
 
 ## Atualização automática

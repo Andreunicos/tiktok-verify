@@ -1,5 +1,6 @@
 import type {
   AnalysisResult,
+  SecretKind,
   AutoOptions,
   AutoRun,
   Mood,
@@ -103,7 +104,9 @@ export interface BigLoopApi {
   // Configurações e ferramentas
   getSettings(): Promise<AppSettings>
   saveSettings(patch: Partial<AppSettings>): Promise<AppSettings>
-  setSecret(kind: 'obs' | 'ai', value: string): Promise<Result<boolean>>
+  setSecret(kind: SecretKind, value: string): Promise<Result<boolean>>
+  /** Testa a IA configurada com um pedido mínimo. */
+  aiTest(): Promise<Result<string>>
   toolStatus(refresh?: boolean): Promise<ToolStatus>
   // OBS e monitoramento
   obsStatus(): Promise<ObsStatus>
