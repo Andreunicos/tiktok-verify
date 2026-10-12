@@ -1,0 +1,2 @@
+Emojis: Twemoji (https://github.com/jdecked/twemoji), gráficos © Twitter, Inc. e outros colaboradores,
+licenciados sob CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Convertidos para PNG 128 px.

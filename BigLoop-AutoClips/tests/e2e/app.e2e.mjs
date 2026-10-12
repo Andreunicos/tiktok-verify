@@ -228,7 +228,7 @@ try {
 
   step('TikTok (simulado): conectar, rascunho e postagem com confirmação')
   await page.click('button[aria-label="Configurações"]')
-  await page.click('.settings-nav >> text=Contas (TikTok)')
+  await page.click('.settings-nav >> text=Contas (TikTok')
   const tiktokCard = page.locator('.tiktok-account')
   await tiktokCard.locator('input').nth(0).fill('chave-teste')
   await tiktokCard.locator('input[type=password]').fill('segredo-teste')

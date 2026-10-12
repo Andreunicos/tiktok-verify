@@ -8,6 +8,10 @@ import { findPhrase, peakTeaserRange, planEffects, planZooms, removeDeadTime, sn
 import { outputSize } from '../shared/presets'
 import { scoreRange, suggestClips } from '../shared/suggest'
 import { parseInstructions } from '../shared/instructions'
+import { applyCaptionPreset } from '../shared/captions'
+import { chatHype, type ChatMessage } from '../shared/chat'
+import { promisingRegions } from '../shared/regions'
+import { ALT_CAPTION, alternateText, seriesSpan, seriesTexts, splitIntoParts, wantsAbTest, wantsSeries } from '../shared/variants'
 import { formatTimecode } from '../shared/time'
 import type {
   AnalysisResult,
@@ -17,6 +21,7 @@ import type {
   AutoRun,
   AutoStep,
   AutoStepKey,
+  ClipEdits,
   CutRequest,
   AudioExtras,
   ExportOptions,
@@ -63,7 +68,9 @@ export interface AutoDeps {
   saveAnalysis(id: string, a: AnalysisResult): void
   analyze(meta: MediaMetadata, signal: AbortSignal, onProgress: (ratio: number) => void): Promise<AnalysisResult>
   /** null quando a transcrição não está configurada. */
-  transcriber: (() => ((path: string, signal: AbortSignal, onProgress: (ratio: number) => void) => Promise<Transcript>) | null)
+  transcriber: (() => ((path: string, signal: AbortSignal, onProgress: (ratio: number) => void, ranges?: Range[]) => Promise<Transcript>) | null)
+  /** Lives longas: transcrever só os trechos promissores (padrão: sim). */
+  fastTranscribe?: () => boolean
   /** Instala as legendas automáticas (whisper.cpp + modelo) quando faltam. */
   installTranscriber?: (signal: AbortSignal, onProgress: (label: string, ratio: number) => void) => Promise<void>
   /** Texto para redes com IA (opcional). Retorna null se desligada. */
@@ -74,6 +81,10 @@ export interface AutoDeps {
   pickEffect?: (key: string) => string | null
   /** IA (grátis ou Claude) que escolhe os melhores trechos e escreve os textos. null = desligada. */
   aiPlan?: (platform: string, count: number, candidates: PlanCandidate[], request?: string) => Promise<{ via: string; clips: PlannedClip[] } | null>
+  /** Kit da marca (null = desligado). */
+  brand?: () => { handle: string; logoPath: string; logoPosition: 'tl' | 'tr' | 'bl' | 'br'; cta: string; color: string } | null
+  /** Chat da live salvo junto do vídeo (mesmo nome + .rechat.json, .live_chat.json, .chat.json ou .chat.txt). */
+  loadChat?: (videoPath: string) => Promise<ChatMessage[] | null>
   /** A IA lê a transcrição inteira e aponta momentos que funcionam sozinhos. null = IA desligada. */
   aiDiscover?: (cues: Transcript['cues'], opts: { minSec: number; maxSec: number; count: number; durationSec: number; request?: string }, signal: AbortSignal) => Promise<Moment[] | null>
   /** Decide o enquadramento 9:16 seguindo a pessoa. */
@@ -105,6 +116,9 @@ const shortTitle = (t: string) => {
 }
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 const round = (n: number) => Math.round(n * 1000) / 1000
+
+/** Corte em preparação (antes de virar AutoClip): trechos, gancho e textos usados na edição. */
+type WorkClip = AutoClip & { ranges: Range[]; hook: string; keywords: string[]; screenTitle: string; cta: string; noTeaser: boolean; altTitles: string[] }
 const clipText = (cues: Transcript['cues'] | undefined, ranges: Range[]) =>
   (cues ?? [])
     .filter((c) => ranges.some((r) => c.endSec > r.startSec + 0.05 && c.startSec < r.endSec - 0.05))
@@ -161,7 +175,9 @@ export class AutoPilot extends EventEmitter {
       ...(asked.count ? { count: asked.count } : {}),
       ...(asked.music ? { music: asked.music } : {}),
       ...(asked.platform ? { platform: asked.platform } : {}),
-      customSec: asked.durationSec ?? undefined
+      customSec: asked.durationSec ?? undefined,
+      series: rawOptions.series || wantsSeries(rawOptions.instructions),
+      abTest: rawOptions.abTest || wantsAbTest(rawOptions.instructions)
     }
     const steps: AutoStep[] = (Object.keys(STEP_LABELS) as AutoStepKey[]).map((key) => ({ key, label: STEP_LABELS[key], state: 'pendente' }))
     const run: AutoRun = {
@@ -195,6 +211,52 @@ export class AutoPilot extends EventEmitter {
     run.finishedAt = Date.now()
     for (const s of run.steps) if (s.state === 'rodando' || s.state === 'pendente') s.state = 'pulado'
     this.changed(run)
+  }
+
+  /**
+   * Refaz um corte com ajustes (título, texto na tela, começo/fim, música, legenda).
+   * O arquivo antigo não é apagado: o novo ganha sufixo (2), (3)…
+   */
+  redoClip(runId: string, segmentId: string, edits: ClipEdits, cues: Transcript['cues'] | undefined): AutoClip {
+    const run = this.get(runId)
+    const clip = run?.clips.find((c) => c.segmentId === segmentId)
+    if (!run || !clip) throw new Error('Corte não encontrado.')
+    if (!clip.request) throw new Error('Esse corte é de uma versão antiga do app; gere de novo para poder editar.')
+    if (run.state === 'rodando') throw new Error('Espere os cortes terminarem para editar.')
+    const base = clip.request
+    const ranges = base.ranges.map((r) => ({ ...r }))
+    const dur = base.source.durationSec
+    if (edits.trimStart) ranges[0].startSec = round(Math.min(ranges[0].endSec - 1, Math.max(0, ranges[0].startSec + edits.trimStart)))
+    if (edits.trimEnd) {
+      const last = ranges[ranges.length - 1]
+      last.endSec = round(Math.max(last.startSec + 1, Math.min(dur, last.endSec + edits.trimEnd)))
+    }
+    const title = edits.title?.trim() || clip.title
+    const visual = { ...(base.visual ?? {}) }
+    if (edits.overlay !== undefined) visual.title = edits.overlay.trim() || undefined
+    const audioExtras = edits.music === false ? { ...(base.audioExtras ?? {}), music: undefined } : base.audioExtras
+    const withCaptions = edits.captions ?? base.withCues
+    const options = withCaptions ? base.options : { ...base.options, subtitles: 'none' as const }
+    const { withCues: _w, ...rest } = base
+    const req: CutRequest = { ...rest, ranges, segmentName: title.slice(0, 60), visual, audioExtras, options, cues: withCaptions ? cues : undefined }
+    const job = this.deps.enqueue(req)
+    Object.assign(clip, {
+      title,
+      startSec: ranges[0].startSec,
+      endSec: ranges[ranges.length - 1].endSec,
+      durationSec: round(totalLength(ranges)),
+      jobId: job.id,
+      status: job.status,
+      ratio: 0,
+      error: undefined,
+      request: { ...rest, ranges, segmentName: req.segmentName, visual, audioExtras, options, withCues: withCaptions && !!cues?.length }
+    })
+    run.state = 'rodando'
+    run.finishedAt = undefined
+    const st = run.steps.find((s) => s.key === 'exportar')
+    if (st) st.state = 'rodando'
+    this.changed(run)
+    return clip
   }
 
   /** Guarda o 👍/👎 da pessoa num corte. Retorna o corte (para o app aprender com ele). */
@@ -303,13 +365,27 @@ export class AutoPilot extends EventEmitter {
 
       // 2. Analisar (reaproveita análise anterior)
       let analysis = d.getAnalysis(project.id)
-      if (analysis && Math.abs(analysis.durationSec - meta.durationSec) < 1 && analysis.reactions && (analysis.motion || !meta.video)) {
+      if (analysis && Math.abs(analysis.durationSec - meta.durationSec) < 1 && analysis.reactions && analysis.gameEvents && (analysis.motion || !meta.video)) {
         this.skip(run, 'analisar', 'Já analisado antes')
         run.steps[1].state = 'ok'
       } else {
         analysis = await this.step(run, 'analisar', signal, (p) => d.analyze(meta, signal, p))
         d.saveAnalysis(project.id, analysis)
         run.steps[1].detail = `${plural(analysis.silences.length, 'pausa', 'pausas')} · ${plural(analysis.scenes.length, 'mudança de cena', 'mudanças de cena')}`
+      }
+
+      // Chat da live (se veio junto): vira sinal de "momento bom"
+      if (d.loadChat) {
+        try {
+          const msgs = await d.loadChat(run.path)
+          if (msgs && msgs.length >= 20) {
+            analysis = { ...analysis!, chatHype: chatHype(msgs, meta.durationSec) }
+            run.steps[1].detail = `${run.steps[1].detail ?? ''}${run.steps[1].detail ? ' · ' : ''}chat: ${msgs.length} mensagens`
+            this.changed(run)
+          }
+        } catch (err) {
+          d.log?.('warn', 'Não deu para ler o chat da live', err)
+        }
       }
 
       // 3. Transcrever: sem isso não há legenda, título nem IA entendendo o contexto.
@@ -336,10 +412,17 @@ export class AutoPilot extends EventEmitter {
               st.detail = 'Transcrevendo a fala…'
             }
             const base = st.detail?.startsWith('Transcrevendo') ? 0.3 : 0
-            return transcriber(run.path, signal, (r) => p(base + r * (1 - base)))
+            // Live longa: só os trechos promissores (som alto, ação, chat) — bem mais rápido
+            const regions = (d.fastTranscribe?.() ?? true) ? promisingRegions(analysis!) : null
+            if (regions) {
+              const sec = regions.reduce((t, r) => t + r.endSec - r.startSec, 0)
+              st.detail = `Transcrevendo só as partes promissoras (${Math.round(sec / 60)} de ${Math.round(meta.durationSec / 60)} min)…`
+              this.changed(run, false)
+            }
+            return transcriber(run.path, signal, (r) => p(base + r * (1 - base)), regions ?? undefined)
           })
           d.updateProject(project.id, { transcript })
-          st.detail = `${plural(transcript.cues.length, 'fala', 'falas')}${transcript.language ? ` · idioma ${transcript.language}` : ''}`
+          st.detail = `${plural(transcript.cues.length, 'fala', 'falas')}${transcript.language ? ` · idioma ${transcript.language}` : ''}${transcript.engine.endsWith('(trechos)') ? ' · só as partes promissoras' : ''}`
         } catch (err) {
           if (err instanceof Cancelled || signal.aborted) throw new Cancelled()
           st.state = 'erro'
@@ -407,7 +490,48 @@ export class AutoPilot extends EventEmitter {
         const chosen =
           ranked.length > 0 ? ranked : [{ s: null, plan: undefined, score: 0, range: { startSec: 0, endSec: round(Math.min(meta.durationSec, len.maxSec)) } }]
         if (ranked.length === 0) run.notes.push('O vídeo é curto para a duração escolhida; fiz um corte do começo.')
-        return chosen.map(({ s: sg, plan, score, range }, i): AutoClip & { ranges: Range[]; hook: string; keywords: string[]; screenTitle: string } => {
+        // Série: a história continua a partir do melhor momento, dividida em Parte 1, 2, 3…
+        if (o.series && ranked.length > 0) {
+          const best = [...ranked].sort((p1, p2) => p2.score - p1.score)[0]
+          const partSec = Math.max(len.minSec, len.maxSec * 0.95)
+          let n = Math.max(2, Math.min(6, o.count))
+          const span = seriesSpan(best.range.startSec, meta.durationSec, n, partSec)
+          n = Math.max(1, Math.min(n, Math.floor((span.endSec - span.startSec) / len.minSec)))
+          const parts = splitIntoParts(span, n, cues, analysis!.silences)
+          const text = clipText(cues, [span])
+          const baseTitle = best.plan?.title || (text && localTitle(text)) || 'História completa'
+          const screen = best.plan?.overlay || shortTitle(baseTitle)
+          if (n < 2) run.notes.push('O vídeo é curto demais para uma série; fiz um corte só.')
+          else run.notes.push(`Série: ${n} partes seguidas a partir do melhor momento (${formatTimecode(span.startSec, true).replace(/\.\d+$/, '')}).`)
+          return parts.map((range, i): WorkClip => {
+            const t = n >= 2 ? seriesTexts(i + 1, n, baseTitle) : { title: baseTitle, overlay: '', cta: '' }
+            const sc = scoreRange(analysis!, cues, range, d.learnedWeights())
+            return {
+              segmentId: randomUUID(),
+              index: i + 1,
+              title: t.title,
+              description: best.plan?.description ?? '',
+              hashtags: best.plan?.hashtags.length ? best.plan.hashtags : localHashtags(text || run.fileName, ['cortes', 'parte' + (i + 1)]),
+              startSec: range.startSec,
+              endSec: range.endSec,
+              durationSec: round(range.endSec - range.startSec),
+              score: sc?.score ?? best.score,
+              reasons: [n >= 2 ? `Série: parte ${i + 1} de ${n}` : 'História completa', ...(sc?.reasons ?? [])],
+              features: sc?.features,
+              status: 'pendente',
+              ratio: 0,
+              ...(n >= 2 ? { part: { k: i + 1, n } } : {}),
+              ranges: [range],
+              hook: i === 0 ? (best.plan?.hook ?? '') : '',
+              keywords: best.plan?.keywords ?? [],
+              screenTitle: n >= 2 ? (screen && screen.length <= 24 ? `${t.overlay}: ${screen}` : t.overlay) : screen,
+              cta: t.cta,
+              noTeaser: i > 0,
+              altTitles: [shortTitle(baseTitle), shortTitle((best.plan?.hook ?? '').toLocaleUpperCase('pt-BR'))]
+            }
+          })
+        }
+        return chosen.map(({ s: sg, plan, score, range }, i): WorkClip => {
           const text = clipText(cues, [range])
           const local = (text && localTitle(text)) || `Melhor momento ${i + 1}`
           const title = plan?.title || local
@@ -431,7 +555,11 @@ export class AutoPilot extends EventEmitter {
             hook: plan?.hook ?? '',
             keywords: plan?.keywords ?? [],
             // Título na tela só quando é curto e bom (da IA ou a primeira frase com gancho)
-            screenTitle: plan?.overlay || shortTitle(plan?.title || (text ? local : ''))
+            screenTitle: plan?.overlay || shortTitle(plan?.title || (text ? local : '')),
+            cta: '',
+            noTeaser: false,
+            // Outros títulos possíveis (para a versão B do teste A/B)
+            altTitles: [shortTitle(plan?.title ?? ''), shortTitle((plan?.hook ?? '').toLocaleUpperCase('pt-BR')), text ? shortTitle(local) : '']
           }
         })
       })
@@ -470,17 +598,49 @@ export class AutoPilot extends EventEmitter {
       // Gancho no começo: repete a frase mais forte antes do corte (precisa de tempo por palavra)
       const smart = o.smartEdit !== false
       const teaserByClip = new Map<string, number>()
+      const teaserKind = new Map<string, 'hook' | 'peak' | 'none'>()
+      const baseRanges = new Map(clips.map((c) => [c.segmentId, c.ranges]))
+      const applyTeaser = (c: WorkClip, kind: 'hook' | 'peak' | 'auto'): void => {
+        const base = baseRanges.get(c.segmentId) ?? c.ranges
+        const hookRange = kind !== 'peak' && c.hook && words.length > 0 ? findPhrase(c.hook, words, base) : null
+        const used: 'hook' | 'peak' = hookRange ? 'hook' : 'peak'
+        const range = hookRange ?? (kind === 'hook' ? null : peakTeaserRange(base, analysis!.rmsDb, analysis!.motion))
+        const t = withTeaser(base, range)
+        if (t.teaserSec > 0 && totalLength(t.ranges) <= len.maxSec + 8) {
+          c.ranges = t.ranges
+          c.durationSec = round(totalLength(t.ranges))
+          teaserByClip.set(c.segmentId, t.teaserSec)
+          teaserKind.set(c.segmentId, used)
+        } else teaserKind.set(c.segmentId, 'none')
+      }
       if (smart) {
-        for (const c of clips) {
-          // Frase de gancho da IA; sem ela, o momento mais intenso (som + ação) do próprio corte
-          const hookRange = (c.hook && words.length > 0 ? findPhrase(c.hook, words, c.ranges) : null) ?? peakTeaserRange(c.ranges, analysis!.rmsDb, analysis!.motion)
-          const t = withTeaser(c.ranges, hookRange)
-          if (t.teaserSec > 0 && totalLength(t.ranges) <= len.maxSec + 8) {
-            c.ranges = t.ranges
-            c.durationSec = round(totalLength(t.ranges))
-            teaserByClip.set(c.segmentId, t.teaserSec)
+        // Frase de gancho da IA; sem ela, o momento mais intenso (som + ação) do próprio corte
+        for (const c of clips) if (!c.noTeaser) applyTeaser(c, 'auto')
+      }
+
+      // Teste A/B: cada corte ganha uma versão B com outro gancho, outro título na tela e outra legenda
+      const captionByClip = new Map<string, NonNullable<AutoOptions['captionStyle']>>()
+      if (o.abTest) {
+        const altCaption = ALT_CAPTION[o.captionStyle ?? 'tiktok']
+        for (const a of [...clips]) {
+          a.variant = 'A'
+          const b: WorkClip = {
+            ...a,
+            segmentId: randomUUID(),
+            variant: 'B',
+            title: `${a.title} (versão B)`.slice(0, 80),
+            reasons: ['Versão B: outro começo, outro título na tela e outra legenda — poste as duas e veja qual vai melhor', ...a.reasons],
+            screenTitle: alternateText(a.screenTitle, a.altTitles),
+            ranges: baseRanges.get(a.segmentId) ?? a.ranges
           }
+          baseRanges.set(b.segmentId, b.ranges)
+          b.durationSec = round(totalLength(b.ranges))
+          const kindA = teaserKind.get(a.segmentId) ?? 'none'
+          if (smart && !a.noTeaser && kindA !== 'peak') applyTeaser(b, 'peak')
+          captionByClip.set(b.segmentId, altCaption)
+          clips.splice(clips.indexOf(a) + 1, 0, b)
         }
+        run.notes.push(`Teste A/B: ${plural(clips.length / 2, 'corte saiu', 'cortes saíram')} em duas versões (A e B). Poste as duas em dias diferentes e veja qual teve mais visualizações.`)
       }
 
       // 6. Música e efeitos
@@ -495,7 +655,7 @@ export class AutoPilot extends EventEmitter {
             const extras: AudioExtras = {}
             if (o.music !== 'nenhuma' && d.pickMusic && !musicFailed) {
               try {
-                const m = await d.pickMusic(o.music, signal, c.index - 1)
+                const m = await d.pickMusic(o.music, signal, c.index - 1 + (c.variant === 'B' ? 1 : 0))
                 if (m) {
                   // Trilha gerada pelo app fica mais baixa (é o último recurso); música real um pouco mais alta
                   extras.music = { file: m.file, volume: m.generated ? 0.16 : 0.28, duck: true, attribution: m.attribution }
@@ -533,7 +693,9 @@ export class AutoPilot extends EventEmitter {
           if (!text) continue
           try {
             const ai = await d.aiSocial(text, PLATFORM_LABEL[o.platform])
-            if (ai) Object.assign(c, { title: ai.title || c.title, description: [ai.description, c.description].filter(Boolean).join('\n'), hashtags: ai.hashtags.length ? ai.hashtags : c.hashtags })
+            // Série e versão B mantêm o título com "Parte k/n" / "(versão B)"
+            if (ai && (c.part || c.variant === 'B')) Object.assign(c, { description: [ai.description, c.description].filter(Boolean).join('\n'), hashtags: ai.hashtags.length ? ai.hashtags : c.hashtags })
+            else if (ai) Object.assign(c, { title: ai.title || c.title, description: [ai.description, c.description].filter(Boolean).join('\n'), hashtags: ai.hashtags.length ? ai.hashtags : c.hashtags })
           } catch (err) {
             run.notes.push(`IA indisponível (${(err as Error).message}); usei títulos automáticos locais.`)
             break
@@ -600,30 +762,47 @@ export class AutoPilot extends EventEmitter {
       const existing = d.getProject(project.id)?.segments ?? []
       d.updateProject(project.id, { segments: [...existing, ...segments] })
 
-      // 8. Exportar
+      // 8. Exportar (com o kit da marca, se ligado)
+      const brand = d.brand?.() ?? null
+      const withBrand = (v: VisualExtras | undefined): VisualExtras | undefined => {
+        if (!brand || options.format !== 'mp4') return v
+        return {
+          ...(v ?? {}),
+          ...(brand.handle.trim() ? { handle: brand.handle.trim() } : {}),
+          ...(brand.logoPath ? { logo: { file: brand.logoPath, position: brand.logoPosition } } : {}),
+          ...(brand.cta.trim() ? { cta: brand.cta.trim() } : {})
+        }
+      }
+      // Série: "Parte 2 no perfil" no fim vale mais que a chamada da marca
+      const withSeries = (v: VisualExtras | undefined, cta: string): VisualExtras | undefined => (cta && options.format === 'mp4' ? { ...(v ?? {}), cta } : v)
       const st = run.steps.find((s) => s.key === 'exportar')!
       st.state = 'rodando'
       st.ratio = 0
-      run.clips = clips.map(({ ranges: _r, hook: _h, keywords: _k, screenTitle: _t, ...c }) => c)
+      run.clips = clips.map(({ ranges: _r, hook: _h, keywords: _k, screenTitle: _t, cta: _cta, noTeaser: _n, altTitles: _a, ...c }) => c)
       for (const c of clips) {
         if (signal.aborted) throw new Cancelled()
         const req: CutRequest = {
           inputPath: run.path,
           outputDir: d.outputDir(),
           ranges: c.ranges,
-          options: fitByClip.has(c.segmentId) ? { ...options, fit: fitByClip.get(c.segmentId)! } : options,
+          options: {
+            ...(captionByClip.has(c.segmentId) ? this.exportOptions({ ...o, captionStyle: captionByClip.get(c.segmentId) }, !!transcript?.cues.length) : options),
+            ...(fitByClip.has(c.segmentId) ? { fit: fitByClip.get(c.segmentId)! } : {})
+          },
           segmentName: c.title.slice(0, 60),
           presetName: PLATFORM_LABEL[o.platform],
           cues: transcript?.cues,
           sequence: c.index,
           audioExtras: extrasByClip.get(c.segmentId),
-          visual: visualByClip.get(c.segmentId),
+          visual: withSeries(withBrand(visualByClip.get(c.segmentId)), c.cta),
           source: { durationSec: meta.durationSec, width: meta.video!.width, height: meta.video!.height, fps: meta.video!.fps, audioTracks: meta.audioTracks.length }
         }
         const job = d.enqueue(req)
         const clip = run.clips.find((x) => x.segmentId === c.segmentId)!
         clip.jobId = job.id
         clip.status = job.status
+        const { cues: _c, ...stored } = req
+        clip.request = { ...stored, withCues: !!req.cues?.length }
       }
       run.outputDir = options.subfolderPerSource ? join(d.outputDir(), basename(run.path, extname(run.path)).replace(/[<>:"/\\|?*]/g, '_')) : d.outputDir()
       this.changed(run)
@@ -664,6 +843,8 @@ export class AutoPilot extends EventEmitter {
       includeAudio: true,
       thumbnail: true,
       subtitles: o.subtitles && hasTranscript ? (o.platform === 'youtube' ? 'srt' : 'burn') : 'none',
+      // Estilo escolhido + cor da marca; emojis coloridos nas palavras-chave
+      subtitleStyle: { ...applyCaptionPreset(base.subtitleStyle, o.captionStyle, this.deps.brand?.()?.color), emojis: o.smartEdit !== false },
       nameTemplate: '{n} {trecho}',
       subfolderPerSource: true
     }

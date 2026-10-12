@@ -212,3 +212,40 @@ export function detectReactions(rmsDb: number[], zcr: number[], windowSec = WIND
   }
   return hits.filter((h) => h.endSec - h.startSec >= (h.kind === 'risada' ? 1.2 : 1))
 }
+
+export interface GameEvent {
+  t: number
+  kind: 'tiro' | 'explosao' | 'impacto'
+}
+
+/**
+ * Eventos sonoros de jogo sem IA: um "ataque" súbito (volume pula ≥10 dB em relação aos 200 ms
+ * anteriores). Se some rápido e é áspero → tiro; se demora a sumir e é grave → explosão;
+ * senão → impacto. Estimativa para dar pontos a trechos de ação em gameplay sem fala.
+ */
+export function detectGameEvents(rmsDb: number[], zcr: number[], windowSec = WINDOW_SEC): GameEvent[] {
+  const n = Math.min(rmsDb.length, zcr.length)
+  if (n < 10) return []
+  const voiced = rmsDb.filter((v) => v > -60)
+  if (voiced.length < 10) return []
+  const med = percentile(voiced, 50)
+  const zmed = Math.max(0.01, percentile(zcr.filter((_, i) => rmsDb[i] > -60), 50))
+  const out: GameEvent[] = []
+  let lastAt = -Infinity
+  for (let i = 5; i < n; i++) {
+    // compara com 100–250 ms antes (pula a janela vizinha, que pode já ter o começo do som)
+    const prev = (rmsDb[i - 2] + rmsDb[i - 3] + rmsDb[i - 4] + rmsDb[i - 5]) / 4
+    const cur = rmsDb[i]
+    if (prev < -55 || cur - prev < 10 || cur < med - 3) continue
+    const t = i * windowSec
+    if (t - lastAt < 0.15) continue
+    // quanto tempo leva para cair 8 dB
+    let decay = 0
+    while (decay < 30 && i + decay < n && rmsDb[i + decay] > cur - 8) decay++
+    const kind: GameEvent['kind'] = decay <= 6 && zcr[i] >= zmed * 0.85 ? 'tiro' : decay >= 10 && zcr[i] < zmed * 0.85 ? 'explosao' : 'impacto'
+    out.push({ t: Math.round(t * 100) / 100, kind })
+    // não conta de novo enquanto o mesmo som ainda está soando
+    lastAt = t + Math.max(0, decay - 3) * windowSec
+  }
+  return out
+}

@@ -111,7 +111,7 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 | 78 | Editor de estilo | ✅ fonte, tamanho, cores, posição, linhas |
 | 79 | Modelos de legenda salvos | 🟡 parcial: “Salvar como padrão”; sem lista de modelos nomeados |
 | 80 | Prévia ao vivo | 🟡 parcial: prévia do estilo no painel; não sobre o vídeo |
-| 81 | Emojis automáticos | 🟡 funcionam, mas o libass desenha emoji **sem cor** |
+| 81 | Emojis automáticos | ✅ emojis **coloridos** (imagens Twemoji, CC-BY 4.0) sobrepostos na hora da palavra |
 | 82 | Letras por linha | ✅ |
 | 83 | VTT / ASS | 🟡 VTT ✅; ASS é gerado internamente, não exportado como arquivo |
 
@@ -123,8 +123,8 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 | 86 | Marcar momentos durante a live | 🟡 atalho global + OBS; testado com OBS simulado |
 | 87 | Premiere | 🟡 gera FCP XML (Arquivo → Importar); XML validado, **não importado num Premiere real** |
 | 88 | DaVinci (EDL) | 🟡 EDL CMX3600 gerada; não testada no DaVinci |
-| 89 | Importar VOD da Twitch/YouTube | ❌ não feito (termos de uso e direitos autorais) |
-| 90 | Publicar no TikTok | 🟡 conexão com o app do usuário, rascunhos (manual ou automático) e postagem com confirmação; testado com API simulada |
+| 89 | Importar VOD da Twitch/YouTube | 🟡 colar link (yt-dlp, baixado no 1º uso) + chat da live como sinal; testado com yt-dlp simulado, não contra os sites reais. A pessoa é responsável pelos direitos |
+| 90 | Publicar no TikTok | 🟡 conexão com o app do usuário, rascunhos (manual ou automático), postagem com confirmação, agendamento e leitura de visualizações (video.list, opcional); testado com API simulada |
 
 ## Qualidade, segurança e distribuição
 | # | Item | Status |
@@ -140,6 +140,20 @@ Ambiente de teste: Linux (container), FFmpeg 6.1.1, Electron 44 sob Xvfb. **Nada
 | 99 | Interface carregada em partes | ✅ telas de Fila, Configurações e Sobre carregam sob demanda |
 | 100 | Tela Sobre | ✅ |
 
-**Resumo:** 70 ✅ · 22 🟡 · 8 ❌
+**Resumo:** 71 ✅ · 22 🟡 · 7 ❌
 
 Extras fora da lista original: biblioteca de sons (Openverse + 27 efeitos gerados), 15 trilhas geradas pelo app (funcionam sem internet), música com ducking, efeitos nos momentos certos, IA grátis na nuvem (Groq/Cerebras/OpenRouter), detecção de risadas e gritos, cortes em frases inteiras, gancho no começo, zoom nos picos, título na tela, barra de progresso, palavras-chave na legenda e enquadramento que segue a pessoa.
+
+### Top 10 (2026-10-12)
+| # | Melhoria | Status |
+|---|---|---|
+| 1 | Importar por link (Twitch/YouTube/Kick) | 🟡 yt-dlp; testado com yt-dlp simulado |
+| 2 | Chat da live como sinal de momento bom | ✅ YouTube live_chat, Twitch (JSON) e texto |
+| 3 | Entender o jogo sem fala (tiros, explosões, impactos) | ✅ detecção no áudio |
+| 4 | Editar e refazer um corte (título, texto na tela, começo/fim, música, legenda) | ✅ |
+| 5 | Estilos de legenda virais + emojis coloridos | ✅ 6 estilos, Twemoji |
+| 6 | Kit da marca (@, logo, cor, chamada no fim) | ✅ |
+| 7 | YouTube Shorts + agendamento | 🟡 API simulada; precisa do cliente OAuth do próprio usuário no Google Cloud |
+| 8 | Aprender com as visualizações reais | 🟡 YouTube (statistics) e TikTok (video.list, depende de aprovação do escopo); testado com APIs simuladas |
+| 9 | Velocidade: transcrever só as partes promissoras de lives longas + whisper na placa NVIDIA | 🟡 trechos ✅; versão CUDA do whisper.cpp opcional (~500 MB), não testada numa NVIDIA real |
+| 10 | Teste A/B (versão B de cada corte) e séries "Parte 1/2/3" | ✅ |

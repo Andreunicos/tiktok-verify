@@ -1,5 +1,10 @@
 import type {
   AnalysisResult,
+  ScheduledPost,
+  YouTubePostRequest,
+  YouTubeStatus,
+  AutoClip,
+  ClipEdits,
   SecretKind,
   AutoOptions,
   AutoRun,
@@ -41,7 +46,7 @@ export interface SocialCopy {
   hashtags: string[]
 }
 
-export type FileKind = 'video' | 'subtitle' | 'executable' | 'model'
+export type FileKind = 'video' | 'subtitle' | 'executable' | 'model' | 'image'
 
 /** API exposta ao renderer pelo preload (window.bigloop). */
 export interface BigLoopApi {
@@ -100,6 +105,8 @@ export interface BigLoopApi {
   tiktokSend(req: TikTokPostRequest, taskId: string): Promise<Result<{ publishId: string; status: string }>>
   // Instalação de ferramentas com 1 clique (Windows)
   installWhisper(taskId: string, model: 'base' | 'small'): Promise<Result<{ whisperPath: string; modelPath: string }>>
+  /** Versão do whisper.cpp para placa NVIDIA (download grande). */
+  installWhisperGpu(taskId: string): Promise<Result<string>>
   installFfmpeg(taskId: string): Promise<Result<{ ffmpegPath: string; ffprobePath: string }>>
   // Configurações e ferramentas
   getSettings(): Promise<AppSettings>
@@ -109,6 +116,23 @@ export interface BigLoopApi {
   aiTest(): Promise<Result<string>>
   /** 👍/👎 num corte do modo automático: o app aprende o seu gosto. */
   autoFeedback(runId: string, segmentId: string, value: 'up' | 'down' | null): Promise<Result<boolean>>
+  /** Refaz um corte do modo automático com ajustes (o arquivo antigo fica). */
+  autoRedo(runId: string, segmentId: string, edits: ClipEdits): Promise<Result<AutoClip>>
+  youtubeStatus(): Promise<YouTubeStatus>
+  youtubeSaveApp(clientId: string, clientSecret: string | null): Promise<Result<YouTubeStatus>>
+  youtubeConnect(): Promise<Result<YouTubeStatus>>
+  youtubeDisconnect(): Promise<YouTubeStatus>
+  /** Envia um corte ao YouTube (Shorts). Com publishAt, o YouTube publica sozinho na hora. */
+  youtubeSend(req: YouTubePostRequest, taskId: string): Promise<Result<string>>
+  scheduleList(): Promise<ScheduledPost[]>
+  scheduleRemove(id: string): Promise<ScheduledPost[]>
+  /** Agenda todos os cortes prontos: 1 a cada N horas no TikTok (rascunho) e/ou YouTube. */
+  scheduleRun(runId: string, opts: { startAt: number; everyHours: number; tiktok: boolean; youtube: boolean; youtubePrivacy?: 'public' | 'unlisted' }): Promise<Result<{ tiktok: number; youtube: number; first: number; last: number }>>
+  /** Busca as visualizações dos posts e aprende com elas. */
+  statsRefresh(): Promise<Result<{ updated: number; learned: number }>>
+  onSchedule(cb: (list: ScheduledPost[]) => void): () => void
+  /** Baixa uma live/vídeo por link (Twitch, YouTube, Kick…) com o chat, se houver. Progresso por onTaskProgress. */
+  downloadUrl(taskId: string, url: string): Promise<Result<{ videoPath: string; chatPath: string | null }>>
   toolStatus(refresh?: boolean): Promise<ToolStatus>
   // OBS e monitoramento
   obsStatus(): Promise<ObsStatus>

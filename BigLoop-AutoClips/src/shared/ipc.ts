@@ -27,6 +27,17 @@ export const IPC = {
   aiTranslate: 'ai:translate',
   aiTest: 'ai:test',
   autoFeedback: 'auto:feedback',
+  downloadUrl: 'tools:download-url',
+  autoRedo: 'auto:redo',
+  youtubeStatus: 'youtube:status',
+  youtubeSaveApp: 'youtube:save-app',
+  youtubeConnect: 'youtube:connect',
+  youtubeDisconnect: 'youtube:disconnect',
+  youtubeSend: 'youtube:send',
+  scheduleList: 'schedule:list',
+  scheduleRemove: 'schedule:remove',
+  scheduleRun: 'schedule:run',
+  statsRefresh: 'stats:refresh',
   autoStart: 'auto:start',
   autoList: 'auto:list',
   autoCancel: 'auto:cancel',
@@ -44,6 +55,7 @@ export const IPC = {
   tiktokCreator: 'tiktok:creator',
   tiktokSend: 'tiktok:send',
   installWhisper: 'install:whisper',
+  installWhisperGpu: 'install:whisper-gpu',
   installFfmpeg: 'install:ffmpeg',
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
@@ -71,5 +83,6 @@ export const IPC = {
   evShortcut: 'ev:shortcut',
   evUpdate: 'ev:update',
   evNotice: 'ev:notice',
-  evAuto: 'ev:auto'
+  evAuto: 'ev:auto',
+  evSchedule: 'ev:schedule'
 } as const

@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, ObsStatus, ToolStatus, WatchStatus } from '@shared/types'
 import { SetupCard } from '../components/SetupCard'
 import { AiSettings } from '../components/AiSettings'
+import { BrandSettings } from '../components/BrandSettings'
 import { TikTokAccount } from '../components/TikTokAccount'
+import { YouTubeAccount } from '../components/YouTubeAccount'
+import { WhisperSpeed } from '../components/WhisperSpeed'
 import { Field, Toggle, useToast } from '../lib/ui'
 
 interface Props {
@@ -18,11 +21,12 @@ interface Props {
 
 const SECTIONS = [
   ['geral', 'Geral'],
-  ['contas', 'Contas (TikTok)'],
+  ['contas', 'Contas (TikTok/YouTube)'],
   ['ffmpeg', 'FFmpeg'],
   ['transcricao', 'Transcrição'],
   ['monitoramento', 'Monitoramento'],
   ['obs', 'OBS'],
+  ['marca', 'Sua marca'],
   ['ia', 'IA'],
   ['diagnostico', 'Diagnóstico'],
   ['sobre', 'Sobre e atualizações']
@@ -99,6 +103,7 @@ export default function SettingsView(p: Props) {
         <section className="card" ref={sec('contas')}>
           <h2>Contas — TikTok</h2>
           <TikTokAccount settings={s} onSettings={p.onSettings} />
+          <YouTubeAccount settings={s} onSettings={p.onSettings} />
         </section>
 
         <section className="card" ref={sec('ffmpeg')}>
@@ -152,6 +157,7 @@ export default function SettingsView(p: Props) {
           ) : (
             <SetupCard tools={p.tools} onInstalled={p.onRefreshTools} />
           )}
+          <WhisperSpeed settings={s} tools={p.tools} onSettings={p.onSettings} />
           <details>
             <summary className="muted small">Configuração manual (avançado)</summary>
           <p className="muted small">
@@ -294,6 +300,11 @@ export default function SettingsView(p: Props) {
               {p.obs.error ? ` · ${p.obs.error}` : ''}
             </p>
           )}
+        </section>
+
+        <section className="card" ref={sec('marca')}>
+          <h2>Sua marca</h2>
+          <BrandSettings settings={s} onSettings={p.onSettings} />
         </section>
 
         <section className="card" ref={sec('ia')}>

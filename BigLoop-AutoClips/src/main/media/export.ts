@@ -4,10 +4,11 @@ import { constants as fsConstants } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { constants as osConstants, setPriority, tmpdir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
-import { OUTPUT_EXT, buildExportArgs, buildThumbnailArgs, estimateOutputBytes, parseProgressChunk, sanitizeFileName } from '../../shared/ffmpeg'
+import { OUTPUT_EXT, buildExportArgs, clipDuration, buildThumbnailArgs, estimateOutputBytes, parseProgressChunk, sanitizeFileName } from '../../shared/ffmpeg'
 import { renderName } from '../../shared/naming'
 import { outputSize } from '../../shared/presets'
 import { buildAss, formatSrt, mapCuesToClip } from '../../shared/subtitles'
+import { emojiEvents } from '../../shared/captions'
 import type { CutRequest } from '../../shared/types'
 import { validateRequest } from '../../shared/validation'
 
@@ -66,6 +67,8 @@ export interface ExportOptionsRuntime {
   lowPriority?: boolean
   /** Espaço mínimo livre exigido além da estimativa. */
   minFreeBytes?: number
+  /** Pasta com as imagens dos emojis coloridos (resources/emoji). */
+  emojiDir?: string
 }
 
 function run(ffmpeg: string, args: string[], cwd: string | undefined, lowPriority: boolean): ChildProcess {
@@ -158,17 +161,30 @@ export async function startExport(req: CutRequest, opts: ExportOptionsRuntime): 
   const burn = (o.subtitles === 'burn' || o.subtitles === 'both') && o.format === 'mp4'
   const clipCues = req.cues && o.subtitles !== 'none' ? mapCuesToClip(req.cues, req.ranges, o.speed) : []
   let assName: string | undefined
-  const title = o.format === 'mp4' ? req.visual?.title?.trim() : undefined
-  if ((burn && clipCues.length > 0) || title) {
+  const mp4 = o.format === 'mp4'
+  const title = mp4 ? req.visual?.title?.trim() : undefined
+  const handle = mp4 ? req.visual?.handle?.trim() : undefined
+  const cta = mp4 ? req.visual?.cta?.trim() : undefined
+  // Emojis coloridos: viram imagens sobre o vídeo (o motor de legenda não desenha emoji colorido)
+  let style = o.subtitleStyle
+  let finalReq = req
+  if (burn && clipCues.length > 0 && style.emojis && opts.emojiDir) {
+    const events = emojiEvents(clipCues)
+      .map((e) => ({ file: join(opts.emojiDir!, `${e.code}.png`), startSec: e.startSec, endSec: e.endSec }))
+      .filter((e) => existsSync(e.file))
+    style = { ...style, emojis: false }
+    if (events.length) finalReq = { ...req, visual: { ...(req.visual ?? {}), emojis: events } }
+  }
+  if ((burn && clipCues.length > 0) || title || handle || cta) {
     assName = 'legendas.ass'
     const [w, h] = outputSize(o.aspect, req.source.width, req.source.height)
     const cuesToBurn = burn ? clipCues : []
-    await writeFile(join(workDir, assName), buildAss(cuesToBurn, o.subtitleStyle, w, h, { title, keywords: req.visual?.keywords }), 'utf8')
+    await writeFile(join(workDir, assName), buildAss(cuesToBurn, style, w, h, { title, keywords: req.visual?.keywords, handle, handleSide: req.visual?.logo?.position.endsWith('r') ? 'left' : 'right', cta, durationSec: clipDuration(req) }), 'utf8')
   }
 
   const ext = extname(outputPath)
   const tmpOut = join(workDir, `saida${ext}`)
-  const { args, durationSec } = buildExportArgs(req, tmpOut, assName)
+  const { args, durationSec } = buildExportArgs(finalReq, tmpOut, assName)
   const started = Date.now()
   let child: ChildProcess | null = null
   let cancelled = false

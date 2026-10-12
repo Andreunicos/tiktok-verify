@@ -189,3 +189,44 @@ Pedido: deixar o app mais inteligente, com mais sons, e IA open source ilimitada
 - **Descrição** aparece no cartão do corte.
 - **Testes**: blocos da transcrição, prompt com pedido e gosto, junção/ajuste dos momentos com um bloco falhando,
   erro quando nenhum responde; modo automático com momento da IA entrando no corte e 👍 guardado.
+
+## Top 10 melhorias (2026-10-12)
+
+- **Importar por link** (`src/main/media/download.ts`): yt-dlp baixado do GitHub no 1º uso; baixa o vídeo e o
+  replay do chat (`rechat`/`live_chat`) para "Lives baixadas". Testado com um yt-dlp simulado
+  (`tests/fixtures/fake-ytdlp.mjs`); não contra os sites reais (rede bloqueada aqui).
+- **Chat como sinal** (`src/shared/chat.ts`): lê YouTube live_chat (jsonl), Twitch (JSON v5/GQL) e texto
+  `[h:mm:ss] nome: msg`; "empolgação" por segundo (volume de mensagens + KKK/emotes), com atraso de 4 s
+  (o chat reage depois do lance). Vira peso `chat` (1,6) na nota e começos "quentes".
+- **Jogo sem fala** (`detectGameEvents`): subida brusca ≥10 dB contra a média de 2–5 s antes; separa
+  tiro/explosão/impacto pela duração e pelo ZCR. Bug achado: o 3º tiro virava explosão e uma explosão contava
+  duas vezes → ZCR ×0,85 e "debounce" pela queda do som.
+- **Editar e refazer** (`redoClip`): guarda o pedido de exportação de cada corte (sem a legenda, que vem do
+  projeto) e refaz com título/texto/começo/fim/música/legenda novos. O arquivo antigo fica.
+- **Legendas virais + emojis coloridos**: 6 estilos (`src/shared/captions.ts`); o libass não desenha emoji
+  colorido, então os emojis são imagens Twemoji (CC-BY 4.0, crédito nos Termos) sobrepostas pelo FFmpeg.
+  Bugs achados ao olhar os quadros: @ por cima do logo (agora lado oposto), karaokê sem quebra de linha,
+  chamada final não aparecia em cortes de 6 s.
+- **Kit da marca**: @, logo, cor de destaque e chamada no fim; desligado por padrão.
+- **YouTube Shorts** (`src/main/youtube.ts`): OAuth de app de computador com PKCE S256 e retorno em
+  127.0.0.1; upload resumable de 8 MB em 8 MB (308 → continua); agendamento nativo (privado + `publishAt`,
+  o YouTube publica sozinho). Decisão: o cliente OAuth é **do próprio usuário** (Google Cloud), como no
+  TikTok — sem servidor nosso e sem segredo no repositório. Cota padrão da API ≈ 6 envios/dia (mensagem clara).
+- **Agendar** (`src/main/scheduler.ts`): TikTok vai para os rascunhos na hora (app aberto; se estava fechado,
+  envia ao abrir); YouTube usa o agendamento nativo.
+- **Aprender com visualizações** (`src/shared/performance.ts`): só posts com 48 h+; o terço melhor reforça os
+  pesos/gosto, o pior enfraquece; cada post conta uma vez. TikTok precisa do escopo `video.list` (opcional,
+  depende de aprovação do TikTok).
+- **Velocidade**: lives com mais de 20 min transcrevem só ~35% (mín. 10 min) — os trechos de som alto, ação,
+  chat e eventos, com 25 s de contexto antes — colados num áudio só (busca rápida por trecho) e os tempos
+  voltam para os do vídeo; falas não atravessam o "pulo" entre trechos. Desligável em Configurações →
+  Legendas. Placa NVIDIA (detectada pelo encoder NVENC): botão para baixar a versão CUDA do whisper.cpp
+  (~500 MB, opcional); se ela falhar, o app usa a do processador sozinho. **Não testado numa NVIDIA real.**
+- **Teste A/B**: cada corte ganha uma versão B com outro começo (gancho da IA ↔ pico de ação ↔ sem gancho),
+  outro título na tela, outra legenda (ex.: TikTok ↔ Hormozi) e outra trilha. **Séries**: a história continua a
+  partir do melhor momento e é dividida em Parte 1/2/3 no fim de uma frase perto da divisão ideal, com
+  "PARTE k/n" na tela e "PARTE k+1 NO PERFIL" no fim (a chamada da série vale mais que a da marca). A IA não
+  troca os títulos "Parte k/n" e "(versão B)".
+- **Testes novos**: `speed-variants.test.ts`, `youtube.test.ts`, trechos e reserva da placa de vídeo em
+  `transcribe.test.ts`, versão CUDA em `installer.test.ts`, métricas em `tiktok.test.ts`, série + A/B de ponta a
+  ponta em `autopilot.integration.test.ts`.

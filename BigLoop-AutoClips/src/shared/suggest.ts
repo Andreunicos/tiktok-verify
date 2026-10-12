@@ -11,7 +11,9 @@ export const DEFAULT_WEIGHTS: Record<keyof SuggestionFeatures, number> = {
   cleanStart: 0.6,
   cleanEnd: 0.6,
   reaction: 1.3,
-  action: 1.2
+  action: 1.2,
+  chat: 1.6,
+  gameEvents: 1.1
 }
 
 export const FEATURE_LABELS: Record<keyof SuggestionFeatures, string> = {
@@ -23,7 +25,9 @@ export const FEATURE_LABELS: Record<keyof SuggestionFeatures, string> = {
   cleanStart: 'Início limpo',
   cleanEnd: 'Final limpo',
   reaction: 'Risada/grito',
-  action: 'Ação na tela'
+  action: 'Ação na tela',
+  chat: 'Chat explodiu',
+  gameEvents: 'Tiros/explosões'
 }
 
 const HOOK_WORDS =
@@ -62,6 +66,15 @@ function makeScorer(analysis: AnalysisResult, cues: Cue[] | null | undefined, we
     const xs = motion.slice(Math.floor(a), Math.ceil(b))
     return xs.length ? xs.reduce((x, y) => x + y, 0) / xs.length : 0
   }
+  const hype = analysis.chatHype ?? []
+  const chatScore = (a: number, b: number) => {
+    const xs = hype.slice(Math.max(0, Math.floor(a)), Math.ceil(b))
+    if (!xs.length) return 0
+    const mean = xs.reduce((x, y) => x + y, 0) / xs.length
+    return clamp01(Math.max(...xs) * 0.6 + mean * 1.2)
+  }
+  const events = analysis.gameEvents ?? []
+  const eventCount = (a: number, b: number) => events.filter((ev) => ev.t >= a && ev.t <= b).length
   const reactions = analysis.reactions ?? []
   const reactionSeconds = (a: number, b: number) => reactions.reduce((sum, r) => sum + overlap(r, { startSec: a, endSec: b }), 0)
   const reactionKinds = (a: number, b: number) => [...new Set(reactions.filter((r) => overlap(r, { startSec: a, endSec: b }) > 0.3).map((r) => r.kind))]
@@ -97,7 +110,9 @@ function makeScorer(analysis: AnalysisResult, cues: Cue[] | null | undefined, we
       cleanStart: s === 0 || silenceEnds.has(s) || cueStarts.has(s) ? 1 : 0.4,
       cleanEnd: e === D || silenceStarts.has(e) || cueEndsSentence.has(e) ? 1 : 0.4,
       reaction: clamp01(reactionSeconds(s, e) / 1.5),
-      action: motion.length ? clamp01((avgMotion(s, e) - motionMed) / (motionHi - motionMed) + 0.3) : 0
+      action: motion.length ? clamp01((avgMotion(s, e) - motionMed) / (motionHi - motionMed) + 0.3) : 0,
+      chat: hype.length ? chatScore(s, e) : 0,
+      gameEvents: events.length ? clamp01(eventCount(s, e) / Math.max(3, (e - s) / 6)) : 0
     }
     const totalW = Object.values(w).reduce((x, y) => x + y, 0)
     const score = Math.round(((Object.keys(features) as (keyof SuggestionFeatures)[]).reduce((x, f) => x + w[f] * (features[f] ?? 0), 0) / totalW) * 100)
@@ -107,6 +122,8 @@ function makeScorer(analysis: AnalysisResult, cues: Cue[] | null | undefined, we
     if (features.peak >= 0.75) reasons.push(`Pico de volume em ${formatTimecode(maxAt)} (grito, risada ou reação?)`)
     if (features.speech >= 0.85) reasons.push(`Fala contínua em ${Math.round(features.speech * 100)}% do trecho`)
     if ((features.action ?? 0) >= 0.7) reasons.push('Muita ação na tela')
+    if ((features.chat ?? 0) >= 0.5) reasons.push('O chat explodiu nesse trecho')
+    if ((features.gameEvents ?? 0) >= 0.5) reasons.push(`${eventCount(s, e)} tiros/explosões/impactos no trecho`)
     const kinds = reactionKinds(s, e)
     if (kinds.length) reasons.push(`Tem ${kinds.map((k) => (k === 'risada' ? 'risada' : 'grito/reação forte')).join(' e ')} no trecho`)
     if (sceneN >= 2) reasons.push(`${sceneN} mudanças de cena — visual dinâmico`)
@@ -153,7 +170,8 @@ export function suggestClips({ analysis, cues, options, weights }: SuggestInput)
   if (starts.size < 8) for (let t = 0; t < D; t += 2) starts.add(t)
   if (ends.size < 8) for (let t = options.minSec; t <= D; t += 2) ends.add(t)
   // Começos logo antes dos momentos mais fortes (som alto + muita ação), para o corte já abrir na ação
-  const intensity = secDb.map((db, i) => (db - median) / spread + (motion.length ? ((motion[i] ?? 0) - motionMed) / (motionHi - motionMed) : 0))
+  const hypeArr = analysis.chatHype ?? []
+  const intensity = secDb.map((db, i) => (db - median) / spread + (motion.length ? ((motion[i] ?? 0) - motionMed) / (motionHi - motionMed) : 0) + (hypeArr[i] ?? 0) * 2)
   const hot = intensity
     .map((v, i) => ({ v, i }))
     .sort((a, b) => b.v - a.v)

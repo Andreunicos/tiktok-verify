@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { downloadFile, installFfmpeg, installWhisper, type InstallUrls } from '../src/main/installer'
+import { downloadFile, installFfmpeg, installWhisper, installWhisperGpu, type InstallUrls } from '../src/main/installer'
 
 const dir = join(__dirname, '.tmp-installer')
 const files = new Map<string, { body: Buffer; headers?: Record<string, string>; status?: number; truncate?: boolean }>()
@@ -30,7 +30,8 @@ const urls = (): InstallUrls => ({
   whisperReleaseApi: `${base}/api/latest`,
   whisperZipFallback: `${base}/fallback.zip`,
   modelBase: `${base}/models`,
-  ffmpegZip: `${base}/ffmpeg.zip`
+  ffmpegZip: `${base}/ffmpeg.zip`,
+  whisperGpuZipFallback: `${base}/gpu-quebrado.zip`
 })
 
 describe.skipIf(process.platform === 'win32' || spawnSync('zip', ['-v']).status !== 0)('Instalação automática (servidor local)', () => {
@@ -39,7 +40,18 @@ describe.skipIf(process.platform === 'win32' || spawnSync('zip', ['-v']).status 
     mkdirSync(dir, { recursive: true })
     const fakeCli = '#!/bin/sh\necho "usage: whisper-cli [options] file0.wav"\n'
     files.set('/whisper-bin-x64.zip', { body: zipWith('w', { 'Release/whisper-cli': fakeCli, 'Release/ggml.dll': 'x' }) })
-    files.set('/api/latest', { body: Buffer.from(JSON.stringify({ assets: [{ name: 'whisper-bin-x64.zip', browser_download_url: '__BASE__/whisper-bin-x64.zip' }] })) })
+    files.set('/api/latest', {
+      body: Buffer.from(
+        JSON.stringify({
+          assets: [
+            { name: 'whisper-bin-x64.zip', browser_download_url: '__BASE__/whisper-bin-x64.zip' },
+            { name: 'whisper-cublas-12.4.0-bin-x64.zip', browser_download_url: '__BASE__/whisper-cublas.zip' }
+          ]
+        })
+      )
+    })
+    files.set('/whisper-cublas.zip', { body: zipWith('g', { 'Release/whisper-cli': fakeCli, 'Release/cublas64_12.dll': 'x' }) })
+    files.set('/gpu-quebrado.zip', { body: zipWith('q', { 'Release/whisper-cli': '#!/bin/sh\necho "CUDA driver version is insufficient" >&2\nexit 1\n' }) })
     const model = Buffer.alloc(300_000, 7)
     files.set('/models/ggml-base.bin', { body: model, headers: { 'x-linked-etag': `"${createHash('sha256').update(model).digest('hex')}"` } })
     files.set('/models/ggml-small.bin', { body: Buffer.alloc(1000, 1), headers: { 'x-linked-etag': `"${'0'.repeat(64)}"` } })
@@ -48,7 +60,7 @@ describe.skipIf(process.platform === 'win32' || spawnSync('zip', ['-v']).status 
     server = createServer((req, res) => {
       const f = files.get(req.url ?? '')
       if (!f) return res.writeHead(404).end('não achei')
-      const body = Buffer.from(f.body.toString('latin1').replace('__BASE__', base), 'latin1')
+      const body = Buffer.from(f.body.toString('latin1').replaceAll('__BASE__', base), 'latin1')
       const real = req.url === '/api/latest' ? body : f.body
       res.writeHead(f.status ?? 200, { 'content-length': String(real.length), ...f.headers })
       if (f.truncate) {
@@ -93,6 +105,23 @@ describe.skipIf(process.platform === 'win32' || spawnSync('zip', ['-v']).status 
     const r = await installFfmpeg({ baseDir: join(dir, 'app'), urls: urls(), platform: 'linux' })
     expect(r.ffmpegPath).toMatch(/bin\/ffmpeg$/)
     expect(r.ffprobePath).toMatch(/bin\/ffprobe$/)
+  })
+
+  it('versão para placa de vídeo: acha o zip CUDA pela API e instala em pasta separada', async () => {
+    const exe = await installWhisperGpu({ baseDir: join(dir, 'gpu'), urls: urls(), platform: 'linux' })
+    expect(exe).toMatch(/bin-gpu.*whisper-cli$/)
+    expect(existsSync(join(dir, 'gpu', 'whisper', 'bin-gpu', 'Release', 'cublas64_12.dll'))).toBe(true)
+  })
+
+  it('versão para placa de vídeo que não abre: erro claro e apaga a pasta', async () => {
+    const api = files.get('/api/latest')!
+    files.set('/api/latest', { body: Buffer.from('{"assets":[]}') })
+    try {
+      await expect(installWhisperGpu({ baseDir: join(dir, 'gpu2'), urls: urls(), platform: 'linux' })).rejects.toThrow(/placa de vídeo não abriu/)
+      expect(existsSync(join(dir, 'gpu2', 'whisper', 'bin-gpu'))).toBe(false)
+    } finally {
+      files.set('/api/latest', api)
+    }
   })
 
   it('fora do Windows sem URLs de teste explica que é só para Windows', async () => {
