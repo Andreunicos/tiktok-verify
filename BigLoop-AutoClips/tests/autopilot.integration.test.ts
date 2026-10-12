@@ -283,6 +283,29 @@ describe.skipIf(!ffmpeg || !ffprobe || process.platform === 'win32')('Modo autom
     }
   })
 
+  it('série + teste A/B: Parte 1/2/3 seguidas, cada uma com versão B (outro começo e outra legenda)', async () => {
+    const { pilot } = setup(true)
+    const run = pilot.start(live, opts({ count: 3, framing: 'game', series: true, abTest: true }))
+    const done = await waitDone(pilot, run.id, 180_000)
+    expect(done.state).toBe('concluído')
+    expect(done.clips).toHaveLength(6)
+    const a = done.clips.filter((c) => c.variant === 'A')
+    const b = done.clips.filter((c) => c.variant === 'B')
+    expect(a.map((c) => c.part)).toEqual([{ k: 1, n: 3 }, { k: 2, n: 3 }, { k: 3, n: 3 }])
+    expect(a.map((c) => c.title.replace(/^.* — /, ''))).toEqual(['Parte 1/3', 'Parte 2/3', 'Parte 3/3'])
+    expect(b.every((c) => /\(versão B\)$/.test(c.title))).toBe(true)
+    // partes seguidas, sem buraco nem repetição
+    for (let i = 1; i < a.length; i++) expect(a[i].startSec).toBeCloseTo(a[i - 1].endSec, 1)
+    // chamada para a próxima parte no fim; a última não tem
+    expect(a.map((c) => c.request!.visual?.cta ?? '')).toEqual(['PARTE 2 NO PERFIL', 'PARTE 3 NO PERFIL', ''])
+    expect(a[1].request!.visual?.title).toMatch(/^PARTE 2\/3/)
+    // versão B usa outro estilo de legenda (tiktok → hormozi)
+    expect(a[0].request!.options.subtitleStyle.highlightColor).not.toBe(b[0].request!.options.subtitleStyle.highlightColor)
+    expect(done.notes.join(' ')).toMatch(/Série: 3 partes/)
+    expect(done.notes.join(' ')).toMatch(/Teste A\/B/)
+    for (const c of done.clips) expect(existsSync(c.outputPath!)).toBe(true)
+  }, 200_000)
+
   it('cancelar para tudo', async () => {
     const { pilot } = setup(false)
     const run = pilot.start(live, opts({ count: 5 }))

@@ -94,6 +94,10 @@ export interface SubtitleStyle {
   /** Destaca a palavra falada (estilo TikTok). Requer tempos por palavra. */
   wordHighlight: boolean
   emojis: boolean
+  /** Karaokê: o texto "enche" de cor conforme é falado. Requer tempos por palavra. */
+  karaoke?: boolean
+  /** Caixa escura atrás do texto. */
+  box?: boolean
 }
 
 export interface ExportOptions {
@@ -154,6 +158,12 @@ export interface VisualExtras {
   title?: string
   /** Palavras que ganham destaque (cor e tamanho) na legenda. */
   keywords?: string[]
+  /** Emojis coloridos (imagens) sobre o vídeo. Preenchido na exportação a partir das legendas. */
+  emojis?: { file: string; startSec: number; endSec: number }[]
+  /** Kit da marca: @ do canal no canto, logo/marca d'água e chamada no final. */
+  handle?: string
+  logo?: { file: string; position: 'tl' | 'tr' | 'bl' | 'br' }
+  cta?: string
 }
 
 export interface AudioExtras {
@@ -223,6 +233,10 @@ export interface AnalysisResult {
   createdAt: number
   /** Movimento da imagem por segundo (diferença média entre quadros; análises antigas não têm). */
   motion?: number[]
+  /** Empolgação do chat por segundo (0..1), quando há chat da live junto do vídeo. */
+  chatHype?: number[]
+  /** Eventos sonoros do jogo (tiros, explosões, impactos) detectados no áudio. */
+  gameEvents?: { t: number; kind: 'tiro' | 'explosao' | 'impacto' }[]
   /** Risadas e gritos detectados no áudio (análises antigas não têm). */
   reactions?: { startSec: number; endSec: number; kind: 'risada' | 'grito' }[]
 }
@@ -239,6 +253,10 @@ export interface SuggestionFeatures {
   reaction?: number
   /** Muita ação na imagem (movimento acima do normal do vídeo). */
   action?: number
+  /** Chat da live empolgado no trecho. */
+  chat?: number
+  /** Tiros/explosões/impactos do jogo no trecho. */
+  gameEvents?: number
 }
 
 export interface Suggestion {
@@ -306,6 +324,12 @@ export interface AppSettings {
   whisperModelPath: string
   whisperLanguage: string
   whisperThreads: number
+  /** whisper-cli da placa de vídeo NVIDIA ('' = não instalado). */
+  whisperGpuPath: string
+  /** Usar a placa de vídeo quando instalada (volta para o processador se falhar). */
+  whisperUseGpu: boolean
+  /** Lives longas: transcrever só os trechos promissores. */
+  fastTranscribe: boolean
   // Monitoramento
   watchEnabled: boolean
   watchDir: string
@@ -331,6 +355,15 @@ export interface AppSettings {
   openrouterKeyEnc: string
   /** IA grátis sem chave (Pollinations) quando não há chave ou as outras falham. */
   keylessAi: boolean
+  youtubeClientId: string
+  youtubeClientSecretEnc: string
+  youtubeTokensEnc: string
+  youtubeChannel: string
+  youtubeCallbackPort: number
+  /** Pede ao TikTok o escopo video.list para ler visualizações (precisa estar aprovado no app do TikTok). */
+  tiktokWithStats: boolean
+  /** Kit da marca aplicado nos cortes do modo automático. */
+  brand: { enabled: boolean; handle: string; logoPath: string; logoPosition: 'tl' | 'tr' | 'bl' | 'br'; cta: string; color: string }
   /** Gosto aprendido com 👍/👎 (títulos/motivos), enviado para a IA. */
   taste: { liked: string[]; disliked: string[] }
   /** Já aplicou os novos padrões do modo automático (enquadramento inteligente e edição turbinada). */
@@ -456,6 +489,12 @@ export interface AutoOptions {
   instructions?: string
   /** Duração pedida no texto (substitui o tamanho padrão). */
   customSec?: { min: number; max: number }
+  /** Estilo da legenda. */
+  captionStyle?: 'tiktok' | 'mrbeast' | 'hormozi' | 'karaoke' | 'caixa' | 'minimal'
+  /** Série: uma história contínua dividida em Parte 1, 2, 3… (com "Parte 2 no perfil" no fim). */
+  series?: boolean
+  /** Teste A/B: cada corte sai também numa versão B (outro gancho, outro título na tela, outra legenda). */
+  abTest?: boolean
 }
 
 export type AutoStepKey = 'ler' | 'analisar' | 'transcrever' | 'escolher' | 'limpar' | 'trilha' | 'editar' | 'exportar'
@@ -483,6 +522,12 @@ export interface AutoClip {
   features?: SuggestionFeatures
   /** O que a pessoa achou do corte. */
   feedback?: 'up' | 'down'
+  /** Teste A/B: versão do corte (a B é a alternativa da A com o mesmo número). */
+  variant?: 'A' | 'B'
+  /** Série: parte k de n. */
+  part?: { k: number; n: number }
+  /** Pedido de exportação usado (sem as legendas, que vêm do projeto) — para editar e refazer. */
+  request?: Omit<CutRequest, 'cues'> & { withCues: boolean }
   jobId?: string
   status: JobStatus | 'pendente'
   ratio: number
@@ -493,13 +538,52 @@ export interface AutoClip {
 }
 
 export interface ClipPost {
-  platform: 'tiktok'
+  platform: 'tiktok' | 'youtube'
   mode: 'rascunho' | 'direto'
-  status: 'enviando' | 'processando' | 'enviado' | 'publicado' | 'erro'
+  status: 'agendado' | 'enviando' | 'processando' | 'enviado' | 'publicado' | 'erro'
   progress?: number
   error?: string
   publishId?: string
+  /** Id do vídeo publicado (TikTok/YouTube), para buscar as visualizações. */
+  postId?: string
+  /** Quando vai sair (agendado). */
+  scheduledAt?: number
+  stats?: { views: number; likes: number; comments: number; shares?: number; at: number }
+  /** Já usado para o app aprender (não conta duas vezes). */
+  learned?: boolean
   at: number
+}
+
+export interface YouTubeStatus {
+  configured: boolean
+  connected: boolean
+  channel: string | null
+}
+
+export interface YouTubePostRequest {
+  file: string
+  title: string
+  description: string
+  tags: string[]
+  privacy: 'public' | 'unlisted' | 'private'
+  /** epoch ms: o YouTube publica sozinho nessa hora. */
+  publishAt?: number
+  runId?: string
+  segmentId?: string
+}
+
+/** Envio agendado que o app faz na hora certa (TikTok; o YouTube agenda no próprio YouTube). */
+export interface ScheduledPost {
+  id: string
+  at: number
+  platform: 'tiktok'
+  file: string
+  runId?: string
+  segmentId?: string
+  mode: 'rascunho' | 'direto'
+  post?: TikTokPostRequest['post']
+  status: 'aguardando' | 'enviando' | 'feito' | 'erro'
+  error?: string
 }
 
 export interface TikTokStatus {
@@ -523,6 +607,8 @@ export interface TikTokCreator {
 }
 
 export interface TikTokPostRequest {
+  /** Atualiza este registro de envio (ex.: o "agendado") em vez de criar outro. */
+  trackAt?: number
   file: string
   mode: 'rascunho' | 'direto'
   /** Para associar ao corte no histórico (opcional). */
@@ -569,3 +655,15 @@ export interface UpdateStatus {
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 
 export type SecretKind = 'obs' | 'ai' | 'groq' | 'cerebras' | 'openrouter'
+
+/** Ajustes ao refazer um corte do modo automático. */
+export interface ClipEdits {
+  title?: string
+  /** Texto de gancho na tela (vazio = sem texto). */
+  overlay?: string
+  /** Segundos a somar no começo/fim (negativo = começa antes / termina antes). */
+  trimStart?: number
+  trimEnd?: number
+  music?: boolean
+  captions?: boolean
+}

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { formatTimecode } from '@shared/time'
+import { CAPTION_PRESETS, type CaptionPreset } from '@shared/captions'
 import type { AppSettings, AutoOptions, AutoRun, MediaMetadata, ToolStatus } from '@shared/types'
 import { SetupCard } from '../components/SetupCard'
-import { useToast } from '../lib/ui'
+import { newId, Progress, useToast } from '../lib/ui'
 import { RunView } from './RunView'
 
 interface Props {
@@ -56,6 +57,21 @@ export function Create(p: Props) {
   const [loading, setLoading] = useState(false)
   const [opts, setOpts] = useState<AutoOptions>(p.settings.auto)
   const [wish, setWish] = useState('')
+  const [link, setLink] = useState('')
+  const [dl, setDl] = useState<{ id: string; label: string; ratio: number } | null>(null)
+  useEffect(() => api.onTaskProgress((t) => setDl((d) => (d && d.id === t.taskId ? { ...d, label: t.label, ratio: t.ratio } : d))), [])
+  const fromLink = async () => {
+    const url = link.trim()
+    if (!url) return
+    const id = newId()
+    setDl({ id, label: 'Preparando o download…', ratio: 0 })
+    const res = await api.downloadUrl(id, url)
+    setDl(null)
+    if (!res.ok) return toast(res.error, 'erro')
+    setLink('')
+    toast(res.value.chatPath ? 'Live baixada com o chat — o app vai usar o chat para achar os melhores momentos.' : 'Live baixada.', 'ok')
+    await choose(res.value.videoPath)
+  }
   const set = (patch: Partial<AutoOptions>) => setOpts((o) => ({ ...o, ...patch }))
   const subtitlesReady = !!p.tools && !p.tools.whisper.error
   const run = p.runs.find((r) => r.id === p.activeRunId) ?? null
@@ -118,6 +134,31 @@ export function Create(p: Props) {
             <span className="hero-title">{loading ? 'Abrindo o vídeo…' : 'Arraste seu vídeo aqui'}</span>
             <span className="hero-sub">ou clique para escolher · o app acha as melhores partes, corta e legenda sozinho</span>
           </button>
+          <form
+            className="link-row"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void fromLink()
+            }}
+          >
+            <input
+              type="url"
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+              placeholder="…ou cole o link da live (Twitch, YouTube, Kick)"
+              disabled={!!dl}
+              aria-label="Link da live"
+            />
+            <button className="primary" type="submit" disabled={!link.trim() || !!dl}>
+              {dl ? `${Math.round(dl.ratio * 100)}%` : 'Baixar e cortar'}
+            </button>
+          </form>
+          {dl && (
+            <div className="link-progress">
+              <Progress ratio={dl.ratio} label={dl.label} />
+              <small className="muted">{dl.label}</small>
+            </div>
+          )}
           {recent.length > 0 && (
             <section className="recent">
               <div className="row between">
@@ -205,6 +246,16 @@ export function Create(p: Props) {
               </div>
             </div>
           )}
+          {subtitlesReady && opts.subtitles && (
+            <div className="choices-group">
+              <span className="group-label">Estilo da legenda</span>
+              <div className="choices">
+                {(Object.keys(CAPTION_PRESETS) as CaptionPreset[]).map((k) => (
+                  <Choice key={k} value={k} current={opts.captionStyle ?? 'tiktok'} onPick={(captionStyle) => set({ captionStyle })} title={CAPTION_PRESETS[k].label} sub={CAPTION_PRESETS[k].sub} />
+                ))}
+              </div>
+            </div>
+          )}
           <div className="choices-group">
             <span className="group-label">Música de fundo</span>
             <div className="choices">
@@ -229,6 +280,14 @@ export function Create(p: Props) {
             <label className="switch">
               <input type="checkbox" checked={opts.smartEdit !== false} onChange={(e) => set({ smartEdit: e.target.checked })} />
               <span>Edição turbinada (gancho, zoom, título e barra)</span>
+            </label>
+            <label className="switch" title="Uma história contínua dividida em partes seguidas, com “Parte 2 no perfil” no fim de cada uma">
+              <input type="checkbox" checked={!!opts.series} onChange={(e) => set({ series: e.target.checked })} />
+              <span>Série: Parte 1, 2, 3… (história seguida)</span>
+            </label>
+            <label className="switch" title="Cada corte sai também numa versão B: outro começo, outro título na tela e outra legenda">
+              <input type="checkbox" checked={!!opts.abTest} onChange={(e) => set({ abTest: e.target.checked })} />
+              <span>Teste A/B: 2 versões de cada corte</span>
             </label>
           </div>
           <button className="cta" onClick={generate}>

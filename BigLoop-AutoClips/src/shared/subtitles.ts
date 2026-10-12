@@ -230,6 +230,13 @@ export interface AssExtras {
   titleSec?: number
   /** Palavras com destaque permanente (amarelo e um pouco maiores). */
   keywords?: string[]
+  /** @ do canal no canto de cima, o vídeo todo. */
+  handle?: string
+  /** Lado do @ (o oposto da logo, para não ficar um em cima do outro). */
+  handleSide?: 'left' | 'right'
+  /** Chamada no final (ex.: "SEGUE PRA PARTE 2") e duração total do corte. */
+  cta?: string
+  durationSec?: number
 }
 
 const keyOf = (w: string) =>
@@ -255,7 +262,10 @@ export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, heigh
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Default,${style.font},${fontSize},${assColor(style.textColor)},${assColor(style.highlightColor)},${assColor(style.outlineColor)},&H80000000,-1,0,0,0,100,100,0,0,1,${Math.round(style.outline * scale)},0,${alignment},${marginH},${marginH},${marginV},1`,
+    // Karaokê: o texto começa na cor normal (secundária) e "enche" com a cor de destaque (primária)
+    `Style: Default,${style.font},${fontSize},${style.karaoke ? assColor(style.highlightColor) : assColor(style.textColor)},${style.karaoke ? assColor(style.textColor) : assColor(style.highlightColor)},${style.box ? '&H40000000' : assColor(style.outlineColor)},&H80000000,-1,0,0,0,100,100,0,0,${style.box ? 3 : 1},${Math.round(style.outline * scale)},0,${alignment},${marginH},${marginH},${marginV},1`,
+    `Style: Handle,${style.font},${Math.max(12, Math.round(fontSize * 0.42))},&H30FFFFFF,&H30FFFFFF,&H60000000,&H00000000,-1,0,0,0,100,100,0,0,1,${Math.max(1, Math.round(2 * scale))},0,9,${marginH},${marginH},${Math.round(height * 0.04)},1`,
+    `Style: Cta,${style.font},${Math.round(fontSize * 0.95)},&H00111111,&H00111111,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,${Math.max(6, Math.round(16 * scale))},0,5,${marginH},${marginH},0,1`,
     `Style: Title,${style.font},${Math.round(fontSize * 1.05)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,${Math.max(3, Math.round(6 * scale))},${Math.max(1, Math.round(3 * scale))},8,${marginH},${marginH},${Math.round(height * 0.1)},1`,
     '',
     '[Events]',
@@ -268,6 +278,15 @@ export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, heigh
   // Palavra-chave em verde (a palavra falada já usa a cor de destaque, normalmente amarela)
   const keyColor = assColor('#4DFF88')
   const keywords = new Set((extras.keywords ?? []).map(keyOf).filter(Boolean))
+  if (extras.handle?.trim() && extras.durationSec) {
+    const h = extras.handle.trim()
+    const align = extras.handleSide === 'left' ? '{\\an7}' : ''
+    events.push(`Dialogue: 2,${assTime(0)},${assTime(extras.durationSec)},Handle,,0,0,0,,${align}${escapeAss(h.startsWith('@') ? h : `@${h}`)}`)
+  }
+  if (extras.cta?.trim() && extras.durationSec && extras.durationSec >= 5) {
+    const from = Math.max(0, extras.durationSec - 2.6)
+    events.push(`Dialogue: 3,${assTime(from)},${assTime(extras.durationSec)},Cta,,0,0,0,,{\\fad(200,0)}${escapeAss(transform(extras.cta.trim()))}`)
+  }
   if (extras.title?.trim()) {
     const lines = wrapText(extras.title.trim(), Math.max(14, Math.round(style.maxCharsPerLine * 1.1))).slice(0, 3)
     events.push(`Dialogue: 1,${assTime(0)},${assTime(extras.titleSec ?? 3.2)},Title,,0,0,0,,{\\fad(150,250)}${lines.map((l) => escapeAss(transform(l))).join('\\N')}`)
@@ -295,7 +314,27 @@ export function buildAss(cues: Cue[], style: SubtitleStyle, width: number, heigh
       return rendered.join('\\N')
     }
     const emojiSuffix = style.emojis ? addEmoji(cue.text).slice(cue.text.length) : ''
-    if (style.wordHighlight && cue.words && cue.words.length > 1) {
+    if (style.karaoke && cue.words && cue.words.length > 1) {
+      // Um evento por bloco, cada palavra "enche" no tempo em que é dita (\kf em centésimos)
+      const parts: string[] = []
+      let cursor = cue.startSec
+      // quebra de linha nos mesmos pontos do texto normal
+      const breaks = new Set<number>()
+      let count = 0
+      for (const line of wrapText(cue.words.map((w) => w.text).join(' '), style.maxCharsPerLine).slice(0, -1)) {
+        count += line.split(' ').length
+        breaks.add(count)
+      }
+      cue.words.forEach((w, i) => {
+        if (breaks.has(i)) parts.push('\\N')
+        const gap = Math.max(0, w.startSec - cursor)
+        if (gap > 0.01) parts.push(`{\\k${Math.round(gap * 100)}}`)
+        const end = i < cue.words!.length - 1 ? Math.max(w.endSec, cue.words![i + 1].startSec) : Math.max(w.endSec, cue.endSec)
+        parts.push(`{\\kf${Math.max(1, Math.round((end - Math.max(cursor, w.startSec)) * 100))}}${escapeAss(transform(w.text))}${i < cue.words!.length - 1 && !breaks.has(i + 1) ? ' ' : ''}`)
+        cursor = end
+      })
+      events.push(`Dialogue: 0,${assTime(cue.startSec)},${assTime(cue.endSec)},Default,,0,0,0,,${parts.join('')}${emojiSuffix}`)
+    } else if (style.wordHighlight && cue.words && cue.words.length > 1) {
       const words = cue.words.map((w) => w.text)
       cue.words.forEach((w, i) => {
         const end = i < cue.words!.length - 1 ? cue.words![i + 1].startSec : cue.endSec

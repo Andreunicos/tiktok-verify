@@ -20,13 +20,16 @@ export interface InstallUrls {
   whisperZipFallback: string
   modelBase: string
   ffmpegZip: string
+  /** Zip do whisper.cpp para placa NVIDIA (CUDA), usado se a API falhar. */
+  whisperGpuZipFallback?: string
 }
 
 export const DEFAULT_URLS: InstallUrls = {
   whisperReleaseApi: 'https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest',
   whisperZipFallback: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip',
   modelBase: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main',
-  ffmpegZip: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+  ffmpegZip: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+  whisperGpuZipFallback: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-cublas-12.4.0-bin-x64.zip'
 }
 
 export interface InstallProgress {
@@ -135,18 +138,18 @@ export async function findFile(dir: string, names: string[]): Promise<string | n
   return null
 }
 
-async function whisperZipUrl(urls: InstallUrls, f: typeof fetch): Promise<string> {
+async function whisperZipUrl(urls: InstallUrls, f: typeof fetch, name = /^whisper-bin-x64\.zip$/i, fallback = urls.whisperZipFallback): Promise<string> {
   try {
     const res = await f(urls.whisperReleaseApi, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'BigLoop-AutoClips' } })
     if (res.ok) {
       const data = (await res.json()) as { assets?: { name: string; browser_download_url: string }[] }
-      const asset = data.assets?.find((a) => /^whisper-bin-x64\.zip$/i.test(a.name))
+      const asset = data.assets?.find((a) => name.test(a.name))
       if (asset) return asset.browser_download_url
     }
   } catch {
     // usa o link fixo
   }
-  return urls.whisperZipFallback
+  return fallback
 }
 
 /**
@@ -194,6 +197,45 @@ export async function installWhisper(model: WhisperModel, ctx: InstallContext): 
   return { whisperPath, modelPath }
 }
 
+/**
+ * Versão do whisper.cpp que usa a placa de vídeo NVIDIA (CUDA): transcreve várias vezes mais rápido.
+ * Download grande (~500 MB, inclui as bibliotecas da NVIDIA). Se não abrir, apaga e devolve erro
+ * (o app continua com a versão para processador).
+ */
+export async function installWhisperGpu(ctx: InstallContext): Promise<string> {
+  const platform = ctx.platform ?? process.platform
+  if (platform !== 'win32' && !ctx.urls) throw new InstallError('A versão para placa de vídeo é só para Windows.')
+  const urls = ctx.urls ?? DEFAULT_URLS
+  const f = ctx.fetchImpl ?? fetch
+  const dir = join(ctx.baseDir, 'whisper', 'bin-gpu')
+  const exeNames = platform === 'win32' ? ['whisper-cli.exe', 'main.exe'] : ['whisper-cli', 'main']
+  const p = ctx.onProgress ?? (() => undefined)
+  let exe = existsSync(dir) ? await findFile(dir, exeNames) : null
+  if (!exe) {
+    const zipUrl = await whisperZipUrl(urls, f, /^whisper-cublas-12[\d.]*-bin-x64\.zip$/i, urls.whisperGpuZipFallback ?? DEFAULT_URLS.whisperGpuZipFallback!)
+    const zip = join(ctx.baseDir, 'whisper', 'whisper-gpu.zip')
+    await downloadFile(zipUrl, zip, {
+      signal: ctx.signal,
+      fetchImpl: f,
+      minBytes: ctx.urls ? 1 : 1_000_000,
+      onProgress: (r, t) => p(`Baixando a versão para placa de vídeo (${Math.round(r / 1024 / 1024)} MB${t ? ` de ${Math.round(t / 1024 / 1024)} MB` : ''})`, t ? r / t : 0)
+    })
+    p('Extraindo', 1)
+    await extractZip(zip, dir, platform)
+    await rm(zip, { force: true })
+    exe = await findFile(dir, exeNames)
+    if (!exe) throw new InstallError('O pacote para placa de vídeo não tem o whisper-cli.')
+    if (platform !== 'win32') await chmod(exe, 0o755)
+  }
+  const check = await run(exe, ['-h']).catch((e: Error) => ({ code: -1, out: e.message }))
+  if (!/usage|options/i.test(check.out)) {
+    await rm(dir, { recursive: true, force: true })
+    throw new InstallError('A versão para placa de vídeo não abriu neste PC (driver da NVIDIA antigo?). O app continua usando o processador.')
+  }
+  p('Pronto', 1)
+  return exe
+}
+
 /** Baixa o FFmpeg (build “essentials” do gyan.dev, GPL) para a pasta do app. */
 export async function installFfmpeg(ctx: InstallContext): Promise<{ ffmpegPath: string; ffprobePath: string }> {
   const platform = ctx.platform ?? process.platform
@@ -215,4 +257,20 @@ export async function installFfmpeg(ctx: InstallContext): Promise<{ ffmpegPath: 
   if (check.code !== 0) throw new InstallError(`O FFmpeg foi baixado mas não abriu: ${check.out.trim().split('\n').pop()}`)
   p('Pronto', 1)
   return { ffmpegPath, ffprobePath }
+}
+
+/** Baixa o yt-dlp (baixador de vídeos por link, livre) para a pasta do app. Só Windows. */
+export async function installYtDlp(ctx: InstallContext & { url?: string }): Promise<string> {
+  const platform = ctx.platform ?? process.platform
+  if (platform !== 'win32' && !ctx.url) throw new InstallError('A instalação automática do yt-dlp é só para Windows. Em outros sistemas, instale o yt-dlp.')
+  const dest = join(ctx.baseDir, 'yt-dlp', platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')
+  if (existsSync(dest)) return dest
+  await downloadFile(ctx.url ?? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe', dest, {
+    signal: ctx.signal,
+    fetchImpl: ctx.fetchImpl,
+    minBytes: ctx.url ? 1 : 1_000_000,
+    onProgress: (r, t) => ctx.onProgress?.('Baixando o baixador de vídeos (yt-dlp, só na 1ª vez)', t ? r / t : 0)
+  })
+  if (platform !== 'win32') await chmod(dest, 0o755)
+  return dest
 }

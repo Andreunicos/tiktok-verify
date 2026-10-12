@@ -26,6 +26,8 @@ export interface TikTokTokens {
 }
 
 export interface TikTokAppConfig {
+  /** Pede também o escopo video.list (visualizações dos vídeos) — precisa estar aprovado no app do TikTok. */
+  withStats?: boolean
   clientKey: string
   clientSecret: string
   redirectUri: string
@@ -54,7 +56,7 @@ export function createPkce(): { verifier: string; challenge: string } {
 export function buildAuthUrl(cfg: TikTokAppConfig, state: string, challenge: string): string {
   const u = new URL(cfg.authorizeUrl ?? TIKTOK.authorize)
   u.searchParams.set('client_key', cfg.clientKey)
-  u.searchParams.set('scope', TIKTOK_SCOPES.join(','))
+  u.searchParams.set('scope', [...TIKTOK_SCOPES, ...(cfg.withStats ? ['video.list'] : [])].join(','))
   u.searchParams.set('response_type', 'code')
   u.searchParams.set('redirect_uri', cfg.redirectUri)
   u.searchParams.set('state', state)
@@ -331,6 +333,15 @@ export class TikTokClient {
       failReason: d.fail_reason ?? null,
       postIds: Array.isArray(d.publicaly_available_post_id) ? d.publicaly_available_post_id.map(String) : []
     }
+  }
+
+  /** Visualizações/curtidas/comentários/compartilhamentos (escopo video.list). */
+  async videoStats(ids: string[]): Promise<Record<string, { views: number; likes: number; comments: number; shares: number }>> {
+    if (!ids.length) return {}
+    const d = await this.call('/v2/video/query/?fields=id,view_count,like_count,comment_count,share_count', { filters: { video_ids: ids.slice(0, 20) } })
+    const out: Record<string, { views: number; likes: number; comments: number; shares: number }> = {}
+    for (const v of d.videos ?? []) out[String(v.id)] = { views: Number(v.view_count ?? 0), likes: Number(v.like_count ?? 0), comments: Number(v.comment_count ?? 0), shares: Number(v.share_count ?? 0) }
+    return out
   }
 
   /** Espera o TikTok terminar de processar (ou falhar). */

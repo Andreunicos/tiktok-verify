@@ -17,7 +17,7 @@
 </header>
 <main class="doc">
   <h1>Privacy Policy</h1>
-  <div class="meta">Effective date: October 11, 2026</div>
+  <div class="meta">Effective date: October 12, 2026</div>
   <div class="lang"><a href="#en">English</a><a href="#pt">Português</a></div>
 
   <div id="en">
@@ -36,13 +36,27 @@
     <li><strong>user.info.basic</strong> — your TikTok display name, avatar and open ID, used only to show which account is connected and to identify it to TikTok's API.</li>
     <li><strong>video.upload</strong> — to send a clip to your TikTok drafts (inbox) when you ask, or automatically if you enable that option.</li>
     <li><strong>video.publish</strong> — to publish a clip directly, only after you review and confirm the post settings in the App.</li>
+    <li><strong>video.list</strong> (optional, only if you turn on “Pedir visualizações ao TikTok” (ask TikTok for views) in Settings → Accounts) — to read the view, like, comment and share counts of the videos the App posted for you, so the App can learn which kind of clip works best for you. These numbers stay on your computer.</li>
   </ul>
   <p>The access and refresh tokens received from TikTok are stored <strong>only on your computer</strong>, encrypted with your operating system's secure storage (Windows Data Protection API). They are sent only to TikTok's servers to perform the actions you request. Video files are sent only to TikTok, only for the clips you choose to send. We do not receive or store any of your TikTok data. You can disconnect at any time (Settings → Accounts → Disconnect), which deletes the stored tokens, and you can revoke the App's access in your TikTok settings.</p>
 
+  <h2>2b. YouTube (Google) data</h2>
+  <p>If you choose to connect a YouTube channel, the App uses the official YouTube Data API v3 through a Google OAuth client that <strong>you</strong> create in your own Google Cloud project, with the permissions you approve:</p>
+  <ul>
+    <li><strong>youtube.upload</strong> — to upload a clip as a YouTube Short when you ask, optionally with a scheduled publish time (YouTube publishes it at that time).</li>
+    <li><strong>youtube.readonly</strong> — to show your channel name and read the view, like and comment counts of the videos the App uploaded for you, so the App can learn which kind of clip works best for you.</li>
+  </ul>
+  <p>The tokens are stored only on your computer, encrypted with your operating system's secure storage, and are sent only to Google. Video files go only to YouTube, only for the clips you choose. We do not receive or store any of your Google data. The App's use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. You can disconnect at any time (Settings → Accounts → YouTube → Disconnect) and revoke access at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>. See also the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
+
+  <h2>2c. Scheduled posts</h2>
+  <p>If you schedule clips, the list of scheduled posts (time, file path, platform) is saved on your computer. TikTok scheduled clips are sent to your drafts at the chosen time while the App is open (or as soon as you open it). YouTube scheduled clips are uploaded right away as private videos with a publish time, and YouTube makes them public at that time.</p>
+
   <h2>3. Network connections made by the App</h2>
   <ul>
+    <li><strong>Google / YouTube</strong> (accounts.google.com, oauth2.googleapis.com, www.googleapis.com): only if you connect a YouTube channel, as described above.</li>
+    <li><strong>Video links you paste</strong>: when you paste a link (Twitch, YouTube, Kick, etc.), the App uses the open-source tool <strong>yt-dlp</strong> (downloaded from GitHub on first use) to download that video — and its live chat replay, when available — from the site you chose, to your computer. Only the link is sent, to that site.</li>
     <li><strong>TikTok</strong> (tiktok.com, open.tiktokapis.com): only if you connect an account, as described above.</li>
-    <li><strong>GitHub</strong> (github.com): to check for and download App updates, and to download optional tools (whisper.cpp). These requests include standard technical information such as your IP address, as with any web request.</li>
+    <li><strong>GitHub</strong> (github.com): to check for and download App updates, and to download optional tools (whisper.cpp, including its NVIDIA GPU version if you turn it on, and yt-dlp). These requests include standard technical information such as your IP address, as with any web request.</li>
     <li><strong>Hugging Face</strong> (huggingface.co) and <strong>gyan.dev</strong>: only if you install the speech-to-text model or FFmpeg from within the App.</li>
     <li><strong>Openverse</strong> (api.openverse.org) and the sites hosting the files it lists: only when you search for or download music and sound effects. Only your search words are sent.</li>
     <li><strong>AI services</strong>: used when you paste your own API key in Settings → AI, or through the keyless free option described below. You choose one of: <strong>Groq</strong>, <strong>Cerebras</strong> or <strong>OpenRouter</strong> (free plans that run open-source models; the App tries them in that order if one fails) or the <strong>Anthropic API</strong> (paid). The free option also includes <strong>Pollinations</strong> (pollinations.ai), which works without an account or key; it is on by default as the last fallback and can be turned off in Settings → AI. Only the text of the transcript of the candidate clips is sent — never video, audio or images — to pick the best moments and generate titles, descriptions, hashtags, highlighted words or translations. Free plans of these services may use the text you send to improve their models, under their own privacy policies; do not use the AI feature with confidential conversations. Your keys are stored encrypted on your computer and are sent only to the service they belong to.</li>
@@ -73,7 +87,7 @@
 
   <div id="pt">
   <h1>Política de Privacidade</h1>
-  <div class="meta">Vigência: 11 de outubro de 2026</div>
+  <div class="meta">Vigência: 12 de outubro de 2026</div>
   <p>Esta política explica como o BigLoop AutoClips (o “App”) trata informações. Resumo: <strong>o App roda no seu computador, não temos servidores que recebam seus dados e não vendemos, alugamos nem compartilhamos seus dados.</strong></p>
   <h2>1. Dados processados no seu computador</h2>
   <ul>
@@ -87,12 +101,24 @@
     <li><strong>user.info.basic</strong> — nome de exibição, foto e ID aberto, usados só para mostrar qual conta está conectada e identificá-la na API do TikTok.</li>
     <li><strong>video.upload</strong> — para enviar um corte aos seus rascunhos (caixa de entrada) quando você pedir, ou automaticamente se você ativar essa opção.</li>
     <li><strong>video.publish</strong> — para publicar um corte diretamente, só depois de você revisar e confirmar as configurações do post no App.</li>
+    <li><strong>video.list</strong> (opcional, só se você ligar “Pedir visualizações ao TikTok” em Configurações → Contas) — para ler visualizações, curtidas, comentários e compartilhamentos dos vídeos que o App postou para você, e assim aprender que tipo de corte funciona melhor. Esses números ficam no seu computador.</li>
   </ul>
   <p>Os tokens de acesso recebidos do TikTok ficam <strong>somente no seu computador</strong>, criptografados pelo armazenamento seguro do sistema (Windows Data Protection API), e só são enviados aos servidores do TikTok para fazer o que você pedir. Os vídeos só vão para o TikTok, e só os cortes que você escolher. Nós não recebemos nem guardamos seus dados do TikTok. Você pode desconectar a qualquer momento (Configurações → Contas → Desconectar), o que apaga os tokens, e pode revogar o acesso nas configurações do TikTok.</p>
+  <h2>2b. Dados do YouTube (Google)</h2>
+  <p>Se você conectar um canal do YouTube, o App usa a YouTube Data API v3 oficial, por meio de um cliente OAuth do Google que <strong>você</strong> cria no seu próprio projeto do Google Cloud, com as permissões que você aprovar:</p>
+  <ul>
+    <li><strong>youtube.upload</strong> — para enviar um corte como YouTube Short quando você pedir, com horário de publicação agendado se quiser (o YouTube publica nessa hora).</li>
+    <li><strong>youtube.readonly</strong> — para mostrar o nome do canal e ler visualizações, curtidas e comentários dos vídeos que o App enviou para você, e assim aprender que tipo de corte funciona melhor.</li>
+  </ul>
+  <p>Os tokens ficam só no seu computador, criptografados pelo armazenamento seguro do sistema, e só vão para o Google. Os vídeos só vão para o YouTube, e só os cortes que você escolher. Nós não recebemos nem guardamos seus dados do Google. O uso de informações recebidas das APIs do Google segue a <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de Dados do Usuário dos Serviços de API do Google</a>, incluindo os requisitos de Uso Limitado. Você pode desconectar a qualquer momento (Configurações → Contas → YouTube → Desconectar) e revogar o acesso em <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>. Veja também a <a href="https://policies.google.com/privacy">Política de Privacidade do Google</a>.</p>
+  <h2>2c. Postagens agendadas</h2>
+  <p>Se você agendar cortes, a lista de agendamentos (horário, caminho do arquivo, plataforma) fica salva no seu computador. No TikTok, o corte vai para os rascunhos na hora marcada enquanto o App estiver aberto (ou assim que você abrir). No YouTube, o corte é enviado na hora como vídeo privado com horário de publicação, e o próprio YouTube o torna público nesse horário.</p>
   <h2>3. Conexões de rede feitas pelo App</h2>
   <ul>
+    <li><strong>Google / YouTube</strong>: só se você conectar um canal do YouTube, como descrito acima.</li>
+    <li><strong>Links de vídeo que você colar</strong>: ao colar um link (Twitch, YouTube, Kick etc.), o App usa a ferramenta livre <strong>yt-dlp</strong> (baixada do GitHub no primeiro uso) para baixar esse vídeo — e o replay do chat da live, quando houver — do site escolhido para o seu computador. Só o link é enviado, para esse site.</li>
     <li><strong>TikTok</strong>: só se você conectar uma conta, como descrito acima.</li>
-    <li><strong>GitHub</strong>: para verificar e baixar atualizações e baixar ferramentas opcionais (whisper.cpp). Como qualquer acesso à web, inclui informações técnicas como o seu endereço IP.</li>
+    <li><strong>GitHub</strong>: para verificar e baixar atualizações e baixar ferramentas opcionais (whisper.cpp, incluindo a versão para placa NVIDIA se você ativar, e yt-dlp). Como qualquer acesso à web, inclui informações técnicas como o seu endereço IP.</li>
     <li><strong>Hugging Face</strong> e <strong>gyan.dev</strong>: só se você instalar o modelo de transcrição ou o FFmpeg pelo App.</li>
     <li><strong>Openverse</strong> e os sites que hospedam os arquivos listados: só quando você busca ou baixa músicas e efeitos. Só as palavras da busca são enviadas.</li>
     <li><strong>Serviços de IA</strong>: usados quando você cola a sua própria chave em Configurações → IA, ou pela opção grátis sem chave descrita abaixo. Você escolhe entre <strong>Groq</strong>, <strong>Cerebras</strong> ou <strong>OpenRouter</strong> (planos grátis com modelos de código aberto; o App tenta nessa ordem se um falhar) ou a <strong>API da Anthropic</strong> (paga). A opção grátis inclui também a <strong>Pollinations</strong> (pollinations.ai), que funciona sem conta nem chave; ela vem ligada como último recurso e pode ser desligada em Configurações → IA. Só o texto da transcrição dos trechos candidatos é enviado — nunca vídeo, áudio ou imagens — para escolher os melhores momentos e gerar títulos, descrições, hashtags, palavras em destaque ou traduções. Nos planos grátis, esses serviços podem usar o texto enviado para melhorar os modelos, conforme as políticas deles; não use a IA com conversas confidenciais. Suas chaves ficam criptografadas no seu computador e só vão para o serviço a que pertencem.</li>

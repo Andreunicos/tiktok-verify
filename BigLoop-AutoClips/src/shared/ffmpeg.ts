@@ -129,6 +129,14 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
     extraInputs.push('-i', e.file)
     return nextInput++
   })
+  // Imagens sobre o vídeo (logo da marca e emojis coloridos): uma entrada por imagem, repetida pela duração do corte
+  const vis = o.format === 'mp4' && wantVideo && o.mode !== 'fast' ? req.visual : undefined
+  const logoIdx = vis?.logo ? nextInput++ : -1
+  if (vis?.logo) extraInputs.push('-loop', '1', '-t', n3(duration), '-i', vis.logo.file)
+  const emojiInputs = (vis?.emojis ?? []).slice(0, 8).filter((e) => e.startSec < duration).map((e) => {
+    extraInputs.push('-loop', '1', '-t', n3(duration), '-i', e.file)
+    return { ...e, idx: nextInput++ }
+  })
   const trackIdx = typeof o.audioTrack === 'number' ? Math.min(Math.max(0, o.audioTrack), req.source.audioTracks - 1) : 0
 
   // Modo rápido: cópia de streams, um intervalo.
@@ -185,6 +193,21 @@ export function buildExportArgs(req: CutRequest, outputPath: string, assFileName
       graph.push(`${vNow}fps=${fps},zoompan=z='${zoomExpr(visual.zooms)}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${OW}x${OH}:fps=${fps}[vzoom]`)
       vNow = '[vzoom]'
     }
+    if (logoIdx >= 0 && vis?.logo) {
+      const lw = Math.round(OW * 0.14)
+      const m = Math.round(OW * 0.03)
+      const x = vis.logo.position.endsWith('l') ? `${m}` : `W-w-${m}`
+      const y = vis.logo.position.startsWith('t') ? `${Math.round(OH * 0.03)}` : `H-h-${Math.round(OH * 0.05)}`
+      graph.push(`[${logoIdx}:v]scale=${lw}:-1,format=rgba,colorchannelmixer=aa=0.85[logo]`, `${vNow}[logo]overlay=${x}:${y}:eof_action=pass[vlogo]`)
+      vNow = '[vlogo]'
+    }
+    emojiInputs.forEach((e, i) => {
+      // Emoji colorido logo acima da legenda, enquanto a palavra é dita
+      const ew = Math.round(OW * 0.13)
+      const y = Math.round(OH - OH * 0.14 - (o.subtitleStyle.fontSize * (OW / 1080)) * 2.4 - ew)
+      graph.push(`[${e.idx}:v]scale=${ew}:-1,format=rgba[em${i}]`, `${vNow}[em${i}]overlay=(W-w)/2:${Math.max(0, y)}:enable='between(t,${n3(e.startSec)},${n3(e.endSec)})':eof_action=pass[vem${i}]`)
+      vNow = `[vem${i}]`
+    })
     if (visual?.progressBar && o.aspect !== 'original') {
       const barH = Math.max(4, Math.round(OH * 0.004))
       graph.push(`color=c=0xFFD400@0.95:s=${OW}x${barH}:r=${fps}:d=${n3(duration)},format=rgba[pbar]`, `${vNow}[pbar]overlay=x='-w+w*t/${n3(duration)}':y=H-${barH}:eof_action=pass[vbar]`)

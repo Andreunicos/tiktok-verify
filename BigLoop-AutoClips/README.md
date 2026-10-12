@@ -40,6 +40,23 @@ tamanho, enquadramento) já vêm marcadas com as últimas usadas.
   - O login volta pela página `tiktok-callback.html` (GitHub Pages do repositório), que precisa estar
     publicada na branch principal.
 
+## Novidades: link, YouTube, agendamento, A/B e séries
+
+- **Colar link** da live (Twitch, YouTube, Kick…) em vez de arquivo: o app baixa o vídeo e o chat da live
+  (yt-dlp, baixado no 1º uso). O chat vira sinal de “momento bom”. Só baixe o que é seu ou tem permissão.
+- **Jogo sem fala**: tiros, explosões e impactos no áudio contam como momento de ação.
+- **✏️ Editar** em cada corte: título, texto na tela, começo/fim, música e legenda → refaz o corte.
+- **Estilos de legenda** (TikTok, MrBeast, Hormozi, Karaokê, Caixa, Discreta) com **emojis coloridos**.
+- **Kit da marca** (Configurações → Marca): @, logo, cor e chamada no fim.
+- **YouTube Shorts** (Configurações → Contas): conecte com o **seu** cliente OAuth do Google Cloud
+  (tipo “App para computador”, YouTube Data API v3 ativada). Botão **▶️ YouTube** em cada corte.
+- **📅 Agendar todos**: 1 corte a cada 6/12/24/48 h no TikTok (rascunhos) e/ou YouTube (publicação nativa).
+- **Aprende com as visualizações** dos seus posts (48 h depois): mais do que deu certo, menos do que não deu.
+- **Mais rápido**: lives longas transcrevem só as partes promissoras; com placa NVIDIA, dá para usar a versão
+  CUDA do whisper.cpp (Configurações → Legendas automáticas).
+- **Teste A/B** (2 versões de cada corte) e **Série** (Parte 1, 2, 3… seguidas) no Criar cortes, ou escrevendo
+  “faz em partes” / “teste A/B” no pedido.
+
 ## O que faz (completo)
 
 - **Importar** por botão, Ctrl+O ou arrastar; **biblioteca** com os projetos e trechos salvos.

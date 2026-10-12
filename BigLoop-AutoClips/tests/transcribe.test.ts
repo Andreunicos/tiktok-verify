@@ -1,10 +1,23 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { transcribe } from '../src/main/media/transcribe'
+import { extractArgs, transcribe } from '../src/main/media/transcribe'
 import { resolveTool } from '../src/main/media/tools'
 import { parseWhisperJson, parseWhisperProgress, searchCues } from '../src/shared/whisper'
 import { makeVideo } from './helpers'
+
+describe('extractArgs (áudio para o whisper)', () => {
+  it('vários trechos: uma entrada com busca rápida por trecho, colados com concat', () => {
+    const a = extractArgs('in.mp4', 'out.wav', { ranges: [{ startSec: 10, endSec: 40 }, { startSec: 100, endSec: 130.5 }], audioTrack: 1 })
+    expect(a.join(' ')).toContain('-ss 10.000 -t 30.000 -i in.mp4 -ss 100.000 -t 30.500 -i in.mp4')
+    expect(a).toContain('[0:a:1][1:a:1]concat=n=2:v=0:a=1[a]')
+    expect(a.slice(-7)).toEqual(['-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', 'out.wav'])
+  })
+  it('vídeo inteiro e um trecho continuam como antes', () => {
+    expect(extractArgs('in.mp4', 'o.wav', {})).toContain('0:a:0')
+    expect(extractArgs('in.mp4', 'o.wav', { range: { startSec: 2, endSec: 6 } }).join(' ')).toContain('-ss 2.000 -to 6.000 -i in.mp4')
+  })
+})
 
 describe('parseWhisperJson', () => {
   it('modo palavra: junta pontuação, remove marcadores e agrupa frases', () => {
@@ -68,6 +81,30 @@ describe.skipIf(!ffmpeg || process.platform === 'win32')('transcribe() com whisp
   it('desloca tempos quando transcreve só um trecho', async () => {
     const t = await transcribe(video, { ...base(), range: { startSec: 2, endSec: 6 } })
     expect(t.cues[0].startSec).toBeCloseTo(2)
+  })
+
+  it('vários trechos: cola o áudio, transcreve uma vez e devolve os tempos do vídeo original', async () => {
+    const ranges = [
+      { startSec: 1, endSec: 2.5 },
+      { startSec: 4, endSec: 6 }
+    ]
+    const t = await transcribe(video, { ...base(), ranges })
+    expect(t.engine).toMatch(/trechos/)
+    // "Olá pessoal, tudo bem?" (0–1.5 s no áudio colado) cai no 1º trecho; "Hoje vamos jogar." (2.6 s) no 2º
+    expect(t.cues[0].startSec).toBeCloseTo(1)
+    const hoje = t.cues.find((c) => c.text.startsWith('Hoje'))!
+    expect(hoje.startSec).toBeCloseTo(4 + 1.1)
+    // fala que passa do fim do áudio colado fica presa no fim do último trecho
+    expect(hoje.words![2].endSec).toBeCloseTo(6)
+  })
+
+  it('whisper da placa de vídeo falha → usa o do processador sozinho', async () => {
+    const broken = join(dir, 'gpu-cli.sh')
+    writeFileSync(broken, '#!/bin/sh\necho "CUDA error: no kernel image" >&2\nexit 1\n')
+    chmodSync(broken, 0o755)
+    const t = await transcribe(video, { ...base(), whisperPath: broken, fallbackWhisperPath: fake })
+    expect(t.cues).toHaveLength(2)
+    await expect(transcribe(video, { ...base(), whisperPath: broken })).rejects.toThrow(/CUDA error/)
   })
 
   it('erros claros: sem whisper, sem modelo, falha do processo', async () => {

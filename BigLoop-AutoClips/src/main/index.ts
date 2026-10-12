@@ -23,18 +23,23 @@ import { buildEdl, buildFcpXml } from '../shared/interchange'
 import { IPC } from '../shared/ipc'
 import { formatSrt, formatVtt, parseSubtitles } from '../shared/subtitles'
 import { learnWeights, suggestClips } from '../shared/suggest'
-import type { AppSettings, SecretKind, AutoRun, ClipPost, CutRequest, TikTokPostRequest, TikTokStatus, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
+import type { AppSettings, ClipEdits, ScheduledPost, SecretKind, YouTubePostRequest, YouTubeStatus, AutoRun, ClipPost, CutRequest, TikTokPostRequest, TikTokStatus, Job, MediaMetadata, Project, Result, ToolStatus, VideoEncoder, WatchStatus } from '../shared/types'
 import { autoUpdater } from 'electron-updater'
 import { AutoPilot } from './autopilot'
 import { downloadToLibrary, MOOD_QUERIES, searchOpenverse } from './openverse'
 import { MUSIC_VARIANTS } from '../shared/music'
+import { parseChat } from '../shared/chat'
+import { downloadVideo, findChatFile } from './media/download'
 import { z } from 'zod'
 import { FREE_PROVIDERS, FreeAi, type FreeProviderId } from './freeai'
 import { discoverMoments, planClips } from './brain'
+import { buildYouTubeAuthUrl, exchangeYouTubeCode, YouTubeSession, youtubePkce, type YouTubeAppConfig, type YouTubeTokens } from './youtube'
+import { PostScheduler, seriesTimes } from './scheduler'
+import { pickLearning } from '../shared/performance'
 import { trackPerson } from './media/track'
 import { SoundLibrary } from './sounds'
 import { buildAuthUrl, createPkce, exchangeCode, TIKTOK, TikTokSession, waitForAuthCode, type TikTokAppConfig, type TikTokTokens } from './tiktok'
-import { installFfmpeg, installWhisper } from './installer'
+import { installFfmpeg, installWhisper, installWhisperGpu, installYtDlp } from './installer'
 import { AiError, claudeAsk, socialCopyWith, translateCuesWith, type AskJson } from './ai'
 import { redact } from './diagnostics'
 import { readJson, writeJsonAtomic } from './jsonFile'
@@ -43,7 +48,7 @@ import { allowMediaDir, allowMediaPath, handleMediaProtocol, registerMediaScheme
 import { analyzeMedia, generateThumbnails } from './media/analyze'
 import { checkWritableDir, moveNoOverwrite, startExport } from './media/export'
 import { probeMedia } from './media/probe'
-import { detectHardwareEncoders, readVersion, resolveTool } from './media/tools'
+import { detectHardwareEncoders, findOnPath, readVersion, resolveTool } from './media/tools'
 import { transcribe } from './media/transcribe'
 import { ObsManager } from './obs'
 import { ProjectStore } from './projects'
@@ -74,11 +79,14 @@ const openverseTried = new Set<string>()
 /** Sorteio inicial para a ordem das músicas mudar entre vídeos. */
 const musicOffset = Math.floor(Math.random() * 1000)
 let tiktok: TikTokSession
+let youtube: YouTubeSession
+let scheduler: PostScheduler
 const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
 const tasks = new Map<string, AbortController>()
 const watchState: WatchStatus = { enabled: false, dir: '', pending: [], lastImported: null, error: null }
 
 const bundledBinDir = () => (app.isPackaged ? join(process.resourcesPath, 'bin') : join(app.getAppPath(), 'resources', 'bin'))
+const emojiDir = () => (app.isPackaged ? join(process.resourcesPath, 'emoji') : join(app.getAppPath(), 'resources', 'emoji'))
 const ffmpegPath = () => resolveTool('ffmpeg', settings.get().ffmpegPath, bundledBinDir())
 const ffprobePath = () => resolveTool('ffprobe', settings.get().ffprobePath, bundledBinDir())
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err))
@@ -93,6 +101,13 @@ function requireFfmpeg(): string {
   const p = ffmpegPath()
   if (!p) throw new Error('FFmpeg não encontrado. Instale o FFmpeg ou configure o caminho em Configurações.')
   return p
+}
+
+/** whisper-cli a usar: o da placa de vídeo (se instalado e ligado), com o do processador de reserva. */
+function whisperExe(): { whisperPath: string; fallbackWhisperPath?: string } {
+  const s = settings.get()
+  if (s.whisperUseGpu && s.whisperGpuPath && existsSync(s.whisperGpuPath)) return { whisperPath: s.whisperGpuPath, fallbackWhisperPath: s.whisperPath }
+  return { whisperPath: s.whisperPath }
 }
 
 function requireProject(id: string): Project {
@@ -288,6 +303,7 @@ function setupQueue(): void {
       const handle = await startExport(job.request, {
         ffmpegPath: requireFfmpeg(),
         lowPriority: settings.get().lowPriority,
+        emojiDir: emojiDir(),
         onProgress: (_s, ratio, eta) => report(ratio, eta)
       })
       return handle
@@ -447,17 +463,19 @@ function setupAutopilot(): void {
       transcriber: () => {
         const s = settings.get()
         if (!s.whisperPath || !existsSync(s.whisperPath) || !s.whisperModelPath || !existsSync(s.whisperModelPath)) return null
-        return (path, signal, onProgress) =>
+        return (path, signal, onProgress, ranges) =>
           transcribe(path, {
             ffmpegPath: requireFfmpeg(),
-            whisperPath: s.whisperPath,
+            ...whisperExe(),
             modelPath: s.whisperModelPath,
             language: s.whisperLanguage,
             threads: s.whisperThreads,
+            ranges,
             signal,
             onProgress: (_st, r) => onProgress(r)
           })
       },
+      fastTranscribe: () => settings.get().fastTranscribe !== false,
       installTranscriber:
         process.platform === 'win32'
           ? async (signal, onProgress) => {
@@ -472,6 +490,18 @@ function setupAutopilot(): void {
         log('info', 'IA: escolhendo os melhores trechos', { candidatos: candidates.length })
         const clips = await planClips(ai.ask, platform, count, candidates, request, settings.get().taste)
         return { via: ai.via(), clips }
+      },
+      brand: () => {
+        const b = settings.get().brand
+        if (!b.enabled) return null
+        return { ...b, logoPath: b.logoPath && existsSync(b.logoPath) ? b.logoPath : '' }
+      },
+      loadChat: async (videoPath) => {
+        const file = findChatFile(videoPath)
+        if (!file) return null
+        const msgs = parseChat(await readFile(file, 'utf8'))
+        log('info', 'Chat da live encontrado', { file, mensagens: msgs.length })
+        return msgs
       },
       aiDiscover: async (cues, opts, signal) => {
         const ai = currentAi()
@@ -613,6 +643,7 @@ function tiktokConfig(): TikTokAppConfig {
     clientKey: s.tiktokClientKey,
     clientSecret: decryptSecret(s.tiktokClientSecretEnc),
     redirectUri: s.tiktokRedirectUri,
+    withStats: s.tiktokWithStats,
     // Somente para testes automatizados
     api: process.env.BIGLOOP_TIKTOK_API || TIKTOK.api,
     authorizeUrl: process.env.BIGLOOP_TIKTOK_AUTH || TIKTOK.authorize
@@ -644,12 +675,135 @@ function tiktokStatus(): TikTokStatus {
   }
 }
 
+function youtubeConfig(): YouTubeAppConfig {
+  const s = settings.get()
+  const base = process.env.BIGLOOP_YOUTUBE_BASE // somente para testes automatizados
+  return {
+    clientId: s.youtubeClientId,
+    clientSecret: decryptSecret(s.youtubeClientSecretEnc),
+    port: s.youtubeCallbackPort,
+    ...(base ? { urls: { authorize: `${base}/auth`, token: `${base}/token`, api: `${base}/api`, upload: `${base}/upload` } } : {})
+  }
+}
+
+function setupYouTube(): void {
+  let tokens: YouTubeTokens | null = null
+  try {
+    const raw = decryptSecret(settings.get().youtubeTokensEnc)
+    tokens = raw ? (JSON.parse(raw) as YouTubeTokens) : null
+  } catch {
+    tokens = null
+  }
+  youtube = new YouTubeSession(youtubeConfig(), tokens, (t) => settings.update({ youtubeTokensEnc: t ? encryptSecret(JSON.stringify(t)) : '' }))
+}
+
+function youtubeStatus(): YouTubeStatus {
+  const s = settings.get()
+  return { configured: !!s.youtubeClientId && !!s.youtubeClientSecretEnc, connected: youtube.connected, channel: youtube.connected ? s.youtubeChannel || null : null }
+}
+
+async function sendToYouTube(req: YouTubePostRequest, onProgress?: (r: number) => void): Promise<string> {
+  if (!existsSync(req.file)) throw new Error('O arquivo do corte não existe mais.')
+  youtube.setConfig(youtubeConfig())
+  const at = Date.now()
+  const track = (patch: Partial<ClipPost>) => {
+    if (req.runId && req.segmentId) autopilot.setClipPost(req.runId, req.segmentId, { platform: 'youtube', mode: 'direto', status: 'enviando', at, ...patch })
+  }
+  track({ status: 'enviando', progress: 0, scheduledAt: req.publishAt })
+  try {
+    const id = await youtube.upload(
+      req.file,
+      { title: req.title, description: req.description, tags: req.tags, privacy: req.privacy, publishAt: req.publishAt ? new Date(req.publishAt).toISOString() : undefined },
+      (r) => (onProgress?.(r), track({ status: 'enviando', progress: r, scheduledAt: req.publishAt }))
+    )
+    track({ status: req.publishAt ? 'agendado' : 'publicado', progress: 1, postId: id, scheduledAt: req.publishAt })
+    log('info', 'YouTube: enviado', { id, agendado: !!req.publishAt })
+    return id
+  } catch (err) {
+    track({ status: 'erro', error: errorMessage(err) })
+    log('warn', 'YouTube: falha no envio', err)
+    throw err
+  }
+}
+
+/**
+ * Busca visualizações dos posts (TikTok com escopo video.list; YouTube) e aprende com eles:
+ * os que foram muito melhor que o normal do canal viram "gostou", os muito piores, "não gostou".
+ */
+async function refreshStats(): Promise<{ updated: number; learned: number }> {
+  const s = settings.get()
+  type Ref = { runId: string; segmentId: string; post: ClipPost }
+  const refs: Ref[] = []
+  for (const run of autopilot.list()) for (const c of run.clips) for (const p of c.posts ?? []) refs.push({ runId: run.id, segmentId: c.segmentId, post: p })
+  let updated = 0
+  const stale = (p: ClipPost) => !p.stats || Date.now() - p.stats.at > 6 * 3600_000
+  // TikTok: rascunho que a pessoa publicou depois ganha id ao consultar o status
+  if (tiktok.connected) {
+    const client = tiktok.client()
+    for (const r of refs.filter((x) => x.post.platform === 'tiktok' && !x.post.postId && x.post.publishId && x.post.status === 'enviado')) {
+      const st = await client.status(r.post.publishId!).catch(() => null)
+      if (st?.postIds[0]) autopilot.setClipPost(r.runId, r.segmentId, { ...r.post, status: 'publicado', postId: st.postIds[0] })
+    }
+    if (s.tiktokWithStats) {
+      const want = refs.filter((x) => x.post.platform === 'tiktok' && x.post.postId && stale(x.post))
+      for (let i = 0; i < want.length; i += 20) {
+        const batch = want.slice(i, i + 20)
+        const stats = await client.videoStats(batch.map((b) => b.post.postId!)).catch((err) => (log('warn', 'TikTok: sem visualizações', err), {} as Record<string, never>))
+        for (const b of batch) {
+          const st = stats[b.post.postId!]
+          if (st) (autopilot.setClipPost(b.runId, b.segmentId, { ...b.post, stats: { ...st, at: Date.now() } }), updated++)
+        }
+      }
+    }
+  }
+  if (youtube.connected) {
+    const want = refs.filter((x) => x.post.platform === 'youtube' && x.post.postId && stale(x.post))
+    for (let i = 0; i < want.length; i += 50) {
+      const batch = want.slice(i, i + 50)
+      const stats = await youtube.stats(batch.map((b) => b.post.postId!)).catch((err) => (log('warn', 'YouTube: sem visualizações', err), {} as Record<string, never>))
+      for (const b of batch) {
+        const st = stats[b.post.postId!]
+        if (st) (autopilot.setClipPost(b.runId, b.segmentId, { ...b.post, stats: { ...st, at: Date.now() } }), updated++)
+      }
+    }
+  }
+  // Aprender com os números (por plataforma, contra o normal do próprio canal)
+  let learned = 0
+  for (const platform of ['tiktok', 'youtube'] as const) {
+    const fresh: Ref[] = []
+    for (const run of autopilot.list()) for (const c of run.clips) for (const p of c.posts ?? []) if (p.platform === platform && p.stats) fresh.push({ runId: run.id, segmentId: c.segmentId, post: p })
+    const key = (r: Ref) => `${r.runId}|${r.segmentId}|${r.post.at}`
+    const pick = pickLearning(fresh.map((r) => ({ key: key(r), views: r.post.stats!.views, ageHours: (Date.now() - (r.post.scheduledAt ?? r.post.at)) / 3600_000, learned: !!r.post.learned })))
+    for (const r of fresh) {
+      const k = key(r)
+      const up = pick.up.includes(k)
+      if (!up && !pick.down.includes(k)) continue
+      const run = autopilot.get(r.runId)
+      const clip = run?.clips.find((c) => c.segmentId === r.segmentId)
+      if (!clip) continue
+      const cur = settings.get()
+      const note = `${clip.title} (${r.post.stats!.views} visualizações no ${platform === 'tiktok' ? 'TikTok' : 'YouTube'})`.slice(0, 160)
+      const liked = cur.taste.liked.filter((x) => x !== note)
+      const disliked = cur.taste.disliked.filter((x) => x !== note)
+      ;(up ? liked : disliked).push(note)
+      settings.update({
+        taste: { liked: liked.slice(-20), disliked: disliked.slice(-20) },
+        ...(clip.features ? { learnedWeights: learnWeights(cur.learnedWeights, clip.features, up, 0.25) } : {})
+      })
+      autopilot.setClipPost(r.runId, r.segmentId, { ...r.post, learned: true })
+      learned++
+    }
+  }
+  if (updated || learned) log('info', 'Métricas atualizadas', { updated, learned })
+  return { updated, learned }
+}
+
 /** Envia um arquivo ao TikTok e acompanha até o fim. Atualiza o histórico do corte se houver. */
 async function sendToTikTok(req: TikTokPostRequest, onProgress?: (r: number) => void): Promise<{ publishId: string; status: string }> {
   if (!existsSync(req.file)) throw new Error('O arquivo do corte não existe mais.')
   tiktok.setConfig(tiktokConfig())
   const client = tiktok.client()
-  const at = Date.now()
+  const at = req.trackAt ?? Date.now()
   const track = (patch: Partial<ClipPost>) => {
     if (req.runId && req.segmentId) autopilot.setClipPost(req.runId, req.segmentId, { platform: 'tiktok', mode: req.mode, status: 'enviando', at, ...patch })
   }
@@ -674,7 +828,7 @@ async function sendToTikTok(req: TikTokPostRequest, onProgress?: (r: number) => 
     track({ status: 'processando', progress: 1, publishId })
     const st = await client.waitDone(publishId, { intervalMs: 3000, timeoutMs: 3 * 60_000 })
     const final = st.status === 'PUBLISH_COMPLETE' ? 'publicado' : st.status === 'SEND_TO_USER_INBOX' ? 'enviado' : 'processando'
-    track({ status: final, progress: 1, publishId })
+    track({ status: final, progress: 1, publishId, postId: st.postIds[0] })
     log('info', 'TikTok: envio', { mode: req.mode, status: st.status })
     return { publishId, status: st.status }
   } catch (err) {
@@ -733,7 +887,8 @@ const FILE_FILTERS: Record<FileKind, Electron.FileFilter[]> = {
   video: [{ name: 'Vídeos', extensions: VIDEO_EXTENSIONS }, { name: 'Todos os arquivos', extensions: ['*'] }],
   subtitle: [{ name: 'Legendas', extensions: ['srt', 'vtt'] }],
   executable: process.platform === 'win32' ? [{ name: 'Programas', extensions: ['exe'] }] : [{ name: 'Todos os arquivos', extensions: ['*'] }],
-  model: [{ name: 'Modelos Whisper (ggml)', extensions: ['bin'] }]
+  model: [{ name: 'Modelos Whisper (ggml)', extensions: ['bin'] }],
+  image: [{ name: 'Imagens (PNG com fundo transparente fica melhor)', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
 }
 
 type Handler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
@@ -850,7 +1005,7 @@ function registerIpc(): void {
       const s = settings.get()
       const t = await transcribe(p.path, {
         ffmpegPath: requireFfmpeg(),
-        whisperPath: s.whisperPath,
+        ...whisperExe(),
         modelPath: s.whisperModelPath,
         language: s.whisperLanguage,
         threads: s.whisperThreads,
@@ -1004,6 +1159,17 @@ function registerIpc(): void {
       return fail(err)
     }
   })
+  handle(IPC.autoRedo, (_e, runId: string, segmentId: string, edits: ClipEdits) => {
+    try {
+      const run = autopilot.get(runId)
+      const cues = run ? projects.get(run.projectId)?.transcript?.cues : undefined
+      const clip = autopilot.redoClip(runId, segmentId, edits ?? {}, cues)
+      log('info', 'Refazendo corte com ajustes', { segmentId })
+      return ok(clip)
+    } catch (err) {
+      return fail(err)
+    }
+  })
   handle(IPC.autoFeedback, (_e, runId: string, segmentId: string, value: 'up' | 'down' | null) => {
     try {
       const before = autopilot.get(runId)?.clips.find((c) => c.segmentId === segmentId)?.feedback
@@ -1063,6 +1229,106 @@ function registerIpc(): void {
     }
   })
   handle(IPC.autoList, () => autopilot.list())
+  handle(IPC.youtubeStatus, () => youtubeStatus())
+  handle(IPC.youtubeSaveApp, (_e, clientId: string, clientSecret: string | null) => {
+    try {
+      const patch: Partial<AppSettings> = { youtubeClientId: String(clientId ?? '').trim() }
+      if (clientSecret) patch.youtubeClientSecretEnc = encryptSecret(clientSecret.trim())
+      settings.update(patch)
+      youtube.setConfig(youtubeConfig())
+      return ok(youtubeStatus())
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.youtubeConnect, async () => {
+    try {
+      const cfg = youtubeConfig()
+      if (!cfg.clientId || !cfg.clientSecret) throw new Error('Preencha o Client ID e o Client Secret do seu app do Google primeiro.')
+      const { verifier, challenge } = youtubePkce()
+      const state = youtubePkce().verifier.slice(0, 24)
+      const wait = waitForAuthCode(cfg.port, state)
+      await shell.openExternal(buildYouTubeAuthUrl(cfg, state, challenge))
+      const code = await wait.promise
+      youtube.setConfig(cfg)
+      youtube.setTokens(await exchangeYouTubeCode(cfg, code, verifier))
+      const channel = await youtube.channelTitle().catch(() => '')
+      settings.update({ youtubeChannel: channel })
+      log('info', 'YouTube conectado', { channel })
+      return ok(youtubeStatus())
+    } catch (err) {
+      log('warn', 'YouTube: falha ao conectar', err)
+      return fail(err)
+    }
+  })
+  handle(IPC.youtubeDisconnect, () => {
+    youtube.setTokens(null)
+    settings.update({ youtubeChannel: '' })
+    return youtubeStatus()
+  })
+  handle(IPC.youtubeSend, async (_e, req: YouTubePostRequest, taskId: string) => {
+    try {
+      return ok(await sendToYouTube(req, (r) => send(IPC.evTaskProgress, { taskId, label: 'Enviando ao YouTube', ratio: r })))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.scheduleList, () => scheduler.list())
+  handle(IPC.scheduleRemove, (_e, id: string) => {
+    const p = scheduler.list().find((x) => x.id === id)
+    scheduler.remove(id)
+    if (p?.runId && p.segmentId) {
+      const clip = autopilot.get(p.runId)?.clips.find((c) => c.segmentId === p.segmentId)
+      const post = clip?.posts?.find((x) => x.at === p.at && x.status === 'agendado')
+      if (post) autopilot.setClipPost(p.runId, p.segmentId, { ...post, status: 'erro', error: 'Agendamento cancelado.' })
+    }
+    return scheduler.list()
+  })
+  /** Agenda os cortes prontos de uma vez: 1 a cada N horas, no TikTok (rascunho) e/ou YouTube (o YouTube publica sozinho). */
+  handle(IPC.scheduleRun, async (_e, runId: string, opts: { startAt: number; everyHours: number; tiktok: boolean; youtube: boolean; youtubePrivacy?: 'public' | 'unlisted' }) => {
+    try {
+      const run = autopilot.get(runId)
+      if (!run) throw new Error('Cortes não encontrados.')
+      const clips = run.clips.filter((c) => c.status === 'concluído' && c.outputPath)
+      if (!clips.length) throw new Error('Não há cortes prontos para agendar.')
+      if (!opts.tiktok && !opts.youtube) throw new Error('Escolha TikTok e/ou YouTube.')
+      if (opts.tiktok && !tiktok.connected) throw new Error('Conecte o TikTok em Configurações → Contas.')
+      if (opts.youtube && !youtube.connected) throw new Error('Conecte o YouTube em Configurações → Contas.')
+      const start = Math.max(Date.now() + 60_000, Number(opts.startAt) || 0)
+      const times = seriesTimes(start, clips.length, Math.max(1, Number(opts.everyHours) || 24))
+      let yt = 0
+      for (const [i, c] of clips.entries()) {
+        if (opts.tiktok) {
+          // marca o corte como agendado; o envio acontece na hora (com o app aberto)
+          autopilot.setClipPost(runId, c.segmentId, { platform: 'tiktok', mode: 'rascunho', status: 'agendado', at: times[i], scheduledAt: times[i] })
+          scheduler.add([{ at: times[i], platform: 'tiktok', file: c.outputPath!, runId, segmentId: c.segmentId, mode: 'rascunho' }])
+        }
+        if (opts.youtube) {
+          await sendToYouTube({
+            file: c.outputPath!,
+            title: c.title,
+            description: [c.description, c.hashtags.join(' ')].filter(Boolean).join('\n\n'),
+            tags: c.hashtags,
+            privacy: opts.youtubePrivacy ?? 'public',
+            publishAt: times[i],
+            runId,
+            segmentId: c.segmentId
+          })
+          yt++
+        }
+      }
+      return ok({ tiktok: opts.tiktok ? clips.length : 0, youtube: yt, first: times[0], last: times[times.length - 1] })
+    } catch (err) {
+      return fail(err)
+    }
+  })
+  handle(IPC.statsRefresh, async () => {
+    try {
+      return ok(await refreshStats())
+    } catch (err) {
+      return fail(err)
+    }
+  })
   handle(IPC.tiktokStatus, () => tiktokStatus())
   handle(IPC.tiktokSaveApp, (_e, clientKey: string, clientSecret: string | null, redirectUri: string) => {
     try {
@@ -1172,6 +1438,42 @@ function registerIpc(): void {
       tasks.delete(taskId)
     }
   })
+  handle(IPC.installWhisperGpu, async (_e, taskId: string) => {
+    const ctrl = new AbortController()
+    tasks.set(taskId, ctrl)
+    try {
+      const path = await installWhisperGpu({ baseDir: toolsDir(), signal: ctrl.signal, onProgress: (label, ratio) => send(IPC.evTaskProgress, { taskId, label, ratio }) })
+      settings.update({ whisperGpuPath: path, whisperUseGpu: true })
+      log('info', 'whisper.cpp para placa de vídeo instalado', { path })
+      return ok(path)
+    } catch (err) {
+      log('error', 'Falha ao instalar whisper.cpp (placa de vídeo)', err)
+      return fail(err)
+    } finally {
+      tasks.delete(taskId)
+    }
+  })
+  handle(IPC.downloadUrl, async (_e, taskId: string, url: string) => {
+    const ctrl = new AbortController()
+    tasks.set(taskId, ctrl)
+    const progress = (label: string, ratio: number) => send(IPC.evTaskProgress, { taskId, label, ratio })
+    try {
+      const bundled = join(toolsDir(), 'yt-dlp', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')
+      let ytdlp = [process.env.BIGLOOP_YTDLP, bundled].find((p) => p && existsSync(p)) ?? findOnPath('yt-dlp')
+      if (!ytdlp) ytdlp = await installYtDlp({ baseDir: toolsDir(), signal: ctrl.signal, onProgress: progress })
+      const outDir = join(settings.get().outputDir, 'Lives baixadas')
+      log('info', 'Baixando por link', { url })
+      const r = await downloadVideo(url, { ytdlp, ffmpegDir: dirname(requireFfmpeg()), outDir, signal: ctrl.signal, onProgress: progress })
+      allowMediaPath(r.videoPath)
+      log('info', 'Download concluído', r)
+      return ok(r)
+    } catch (err) {
+      log('error', 'Falha ao baixar por link', err)
+      return fail(err)
+    } finally {
+      tasks.delete(taskId)
+    }
+  })
   handle(IPC.installFfmpeg, async (_e, taskId: string) => {
     const ctrl = new AbortController()
     tasks.set(taskId, ctrl)
@@ -1193,7 +1495,7 @@ function registerIpc(): void {
   handle(IPC.saveSettings, async (_e, patch: Partial<AppSettings>) => {
     const before = settings.get()
     // Segredos só pelo canal próprio
-    const { obsPasswordEnc: _a, aiKeyEnc: _b, tiktokClientSecretEnc: _c, tiktokTokensEnc: _d, groqKeyEnc: _g1, cerebrasKeyEnc: _g2, openrouterKeyEnc: _g3, ...safe } = patch
+    const { obsPasswordEnc: _a, aiKeyEnc: _b, tiktokClientSecretEnc: _c, tiktokTokensEnc: _d, groqKeyEnc: _g1, cerebrasKeyEnc: _g2, openrouterKeyEnc: _g3, youtubeClientSecretEnc: _y1, youtubeTokensEnc: _y2, ...safe } = patch
     const after = settings.update(safe)
     if (after.concurrency !== before.concurrency) queue.setConcurrency(after.concurrency)
     if (after.obsEnabled !== before.obsEnabled || after.obsHost !== before.obsHost || after.obsPort !== before.obsPort) {
@@ -1317,8 +1619,17 @@ app.whenReady().then(async () => {
   setupUpdates()
   sounds = new SoundLibrary(join(app.getPath('userData'), 'sons'))
   setupTikTok()
+  setupYouTube()
   allowMediaDir(sounds.filesDir)
   setupAutopilot()
+  scheduler = new PostScheduler(join(app.getPath('userData'), 'agenda.json'), async (p: ScheduledPost) => {
+    await sendToTikTok({ file: p.file, mode: p.mode, post: p.post, runId: p.runId, segmentId: p.segmentId, trackAt: p.at })
+  })
+  scheduler.on('change', (list) => send(IPC.evSchedule, list))
+  scheduler.start()
+  // Métricas reais: ao abrir (depois de 1 min) e a cada 6 h
+  setTimeout(() => void refreshStats().catch((err) => log('warn', 'Métricas', err)), 60_000)
+  setInterval(() => void refreshStats().catch((err) => log('warn', 'Métricas', err)), 6 * 3600_000)
   registerIpc()
   createWindow()
   if (settings.get().minimizeToTray) createTray()

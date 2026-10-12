@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
+import { EditClipModal } from '../components/EditClipModal'
 import { PostModal } from '../components/PostModal'
+import { ScheduleModal } from '../components/ScheduleModal'
+import { YouTubePostModal } from '../components/YouTubePostModal'
 import { formatTimecode } from '@shared/time'
-import type { AutoClip, AutoRun } from '@shared/types'
+import type { AutoClip, AutoRun, ClipPost } from '@shared/types'
 import { Modal, newId, Progress, useToast } from '../lib/ui'
 
 interface Props {
@@ -15,6 +18,25 @@ interface Props {
 
 const PLATFORM = { tiktok: 'TikTok', reels: 'Reels', shorts: 'Shorts', youtube: 'YouTube' } as const
 const ICON = { pendente: '○', rodando: '◌', ok: '✓', pulado: '–', erro: '✕' } as const
+const postLabel = (p: ClipPost): string => {
+  const where = p.platform === 'youtube' ? 'YouTube' : `TikTok ${p.mode === 'rascunho' ? 'rascunho' : 'post'}`
+  const state =
+    p.status === 'agendado'
+      ? `🕒 agendado para ${new Date(p.scheduledAt ?? p.at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`
+      : p.status === 'enviando'
+        ? `enviando ${Math.round((p.progress ?? 0) * 100)}%`
+        : p.status === 'processando'
+          ? `processando no ${p.platform === 'youtube' ? 'YouTube' : 'TikTok'}…`
+          : p.status === 'enviado'
+            ? p.platform === 'youtube'
+              ? '✓ enviado'
+              : '✓ nos rascunhos'
+            : p.status === 'publicado'
+              ? '✓ publicado'
+              : `erro — ${p.error}`
+  const stats = p.stats ? ` · 👁 ${p.stats.views.toLocaleString('pt-BR')} visualizações · ❤ ${p.stats.likes.toLocaleString('pt-BR')}` : ''
+  return `${where}: ${state}${stats}`
+}
 const clipText = (c: AutoClip) => [c.title, c.description, c.hashtags.join(' ')].filter(Boolean).join('\n\n')
 
 export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOpenAccounts }: Props) {
@@ -22,9 +44,14 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOp
   const api = window.bigloop
   const [preview, setPreview] = useState<AutoClip | null>(null)
   const [posting, setPosting] = useState<AutoClip | null>(null)
+  const [editing, setEditing] = useState<AutoClip | null>(null)
+  const [ytPosting, setYtPosting] = useState<AutoClip | null>(null)
+  const [scheduling, setScheduling] = useState(false)
   const [tiktokOn, setTiktokOn] = useState(false)
+  const [youtubeOn, setYoutubeOn] = useState(false)
   useEffect(() => {
     void api.tiktokStatus().then((s) => setTiktokOn(s.connected))
+    void api.youtubeStatus().then((s) => setYoutubeOn(s.connected))
   }, [])
   const toDrafts = async (c: AutoClip) => {
     const res = await api.tiktokSend({ file: c.outputPath!, mode: 'rascunho', runId: run.id, segmentId: c.segmentId }, newId())
@@ -95,6 +122,7 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOp
                 Conectar TikTok
               </button>
             )}
+            {(tiktokOn || youtubeOn) && ready.length > 0 && <button onClick={() => setScheduling(true)}>📅 Agendar todos</button>}
             <button className="ghost" onClick={onNew}>
               + Criar mais cortes
             </button>
@@ -163,6 +191,8 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOp
                   <strong className="clip-title" title={c.title}>
                     {c.index}. {c.title}
                   </strong>
+                  {c.variant && <span className={`badge variant-${c.variant}`} title={c.variant === 'B' ? 'Versão alternativa do corte de mesmo número' : 'Versão principal'}>versão {c.variant}</span>}
+                  {c.part && <span className="badge">parte {c.part.k}/{c.part.n}</span>}
                   {c.score > 0 && (
                     <span className="badge" title={c.reasons.join('\n')}>
                       nota {c.score}
@@ -193,8 +223,7 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOp
                   {c.error && <p className="error small">{c.error}</p>}
                   {(c.posts ?? []).map((p) => (
                     <p key={p.at} className={`small post-status ${p.status}`}>
-                      TikTok {p.mode === 'rascunho' ? 'rascunho' : 'post'}:{' '}
-                      {p.status === 'enviando' ? `enviando ${Math.round((p.progress ?? 0) * 100)}%` : p.status === 'processando' ? 'processando no TikTok…' : p.status === 'enviado' ? '✓ nos rascunhos' : p.status === 'publicado' ? '✓ publicado' : `erro — ${p.error}`}
+                      {postLabel(p)}
                     </p>
                   ))}
                   <div className="row wrap">
@@ -216,6 +245,16 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOp
                         </button>
                       </>
                     )}
+                    {youtubeOn && c.outputPath && (
+                      <button className="small" onClick={() => setYtPosting(c)} title="Enviar como YouTube Shorts (agora ou agendado)">
+                        ▶️ YouTube
+                      </button>
+                    )}
+                    {c.status === 'concluído' && run.state !== 'rodando' && (
+                      <button className="small" onClick={() => setEditing(c)} title="Mudar título, texto na tela, começo/fim, música ou legenda e refazer">
+                        ✏️ Editar
+                      </button>
+                    )}
                     <button className="ghost small" onClick={() => onAdjust(run.projectId, c.segmentId)} title="Ajustar início e fim no editor avançado">
                       Ajustar
                     </button>
@@ -228,6 +267,9 @@ export function RunView({ run, onNew, onRetry, onAdjust, onEnableSubtitles, onOp
       )}
 
       {posting && <PostModal clip={posting} runId={run.id} onClose={() => setPosting(null)} />}
+      {ytPosting && <YouTubePostModal clip={ytPosting} runId={run.id} onClose={() => setYtPosting(null)} />}
+      {scheduling && <ScheduleModal run={run} tiktokOn={tiktokOn} youtubeOn={youtubeOn} onClose={() => setScheduling(false)} />}
+      {editing && <EditClipModal run={run} clip={editing} onClose={() => setEditing(null)} />}
       {preview && (
         <Modal title={`${preview.index}. ${preview.title}`} onClose={() => setPreview(null)} wide>
           <div className="preview-wrap">

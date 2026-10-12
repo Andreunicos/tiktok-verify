@@ -63,6 +63,10 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
     st.uploads.set(id, { size: si.video_size, parts: [], ranges: [], kind: direct ? 'direct' : 'inbox', post: b.post_info })
     return send(200, { data: { publish_id: id, upload_url: `${base}/upload/${id}` }, error: { code: 'ok' } })
   }
+  if (url.pathname === '/v2/video/query/') {
+    const ids = JSON.parse(raw.toString()).filters.video_ids as string[]
+    return send(200, { data: { videos: ids.map((id) => ({ id, view_count: 4321, like_count: 210, comment_count: 12, share_count: 5 })) }, error: { code: 'ok' } })
+  }
   if (url.pathname === '/v2/post/publish/status/fetch/') {
     st.statusCalls++
     const up = st.uploads.get(JSON.parse(raw.toString()).publish_id)!
@@ -166,6 +170,12 @@ describe('TikTok (API simulada)', () => {
     expect(st.uploads.get(id)!.post).toMatchObject({ title: 'Jogada absurda #cortes', privacy_level: 'SELF_ONLY', disable_duet: true })
     const done = await client.waitDone(id, { intervalMs: 10 })
     expect(done).toMatchObject({ status: 'PUBLISH_COMPLETE', postIds: ['7123'] })
+  })
+
+  it('métricas dos posts (visualizações, curtidas…)', async () => {
+    const stats = await session.client().videoStats(['7123'])
+    expect(stats).toEqual({ '7123': { views: 4321, likes: 210, comments: 12, shares: 5 } })
+    expect(await session.client().videoStats([])).toEqual({})
   })
 
   it('erros de login com mensagens claras', async () => {
