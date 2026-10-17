@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<title>Conversor WAV</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="updatebar">
+  <div class="brand">Conversor WAV <small id="ver"></small></div>
+  <div id="upText" class="up-text">Verificando atualizações…</div>
+  <button id="upInstall" class="primary" hidden>Reiniciar e atualizar</button>
+  <button id="upCheck">Verificar atualização</button>
+  <div id="upProgress" class="progress" hidden><i></i></div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. Adicionar</h2>
+    <div id="drop">Arraste arquivos ou pastas aqui</div>
+    <div class="row">
+      <button id="addFiles">Adicionar arquivos…</button>
+      <button id="addFolder">Adicionar pasta…</button>
+      <span class="muted">Pastas são varridas por inteiro, subpastas incluídas.</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2. Opções</h2>
+    <fieldset>
+      <legend>Versões para gerar de cada arquivo</legend>
+      <div id="presets" class="presets"></div>
+    </fieldset>
+    <fieldset>
+      <legend>Onde salvar</legend>
+      <label class="chk"><input type="radio" name="outmode" value="same" checked> Ao lado do original</label>
+      <label class="chk"><input type="radio" name="outmode" value="other"> Em outra pasta
+        <button id="pickOut" class="small">Escolher…</button> <span id="outDir" class="muted"></span>
+      </label>
+      <label class="chk"><input type="checkbox" id="trash"> Mover o original para a Lixeira depois de converter</label>
+      <p class="hint" id="trashHint" hidden>Só vão para a Lixeira os originais cujo WAV foi criado agora, e dá para restaurá-los de lá.</p>
+    </fieldset>
+  </section>
+
+  <section class="card">
+    <h2>3. Converter</h2>
+    <div class="row">
+      <button id="go" class="primary" disabled>Converter tudo</button>
+      <button id="clear" disabled>Limpar lista</button>
+      <span id="summary" class="muted"></span>
+    </div>
+    <ul id="list"></ul>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
