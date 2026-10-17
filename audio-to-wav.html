@@ -50,6 +50,7 @@
   <ul id="list"></ul>
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 const PRESETS = [
   { label: '16-bit · 44.1 kHz',        tag: '16bit-44k',      rate: 44100, bits: 16, ch: 0 },
@@ -160,7 +161,11 @@ async function save(name, blob, btn) {
   btn.disabled = true;
   btn.textContent = 'Salvando…';
   try {
-    await dl.save({ filename: name, data: blob });
+    // claude.ai só salva extensões da lista permitida (sem .wav), então empacota em .zip
+    const zip = new JSZip();
+    zip.file(name, blob);
+    const packed = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    await dl.save({ filename: name.replace(/\.wav$/, '.zip'), data: packed });
     btn.textContent = 'Salvo';
   } catch (e) {
     btn.textContent = e.code === 'too_large' ? 'Grande demais' : e.code === 'declined' ? 'Baixar' : 'Não salvo';
