@@ -7,66 +7,71 @@
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1d22; --muted:#666c78; --accent:#2f6fed; --border:#dde1e7; --ok:#1f9d55; --err:#d64545; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#14161a; --card:#1d2026; --fg:#e8eaee; --muted:#9aa1ad; --accent:#5b8cff; --border:#2c3038; --ok:#3ecf7a; --err:#ff6b6b; }
+    :root:not([data-theme="light"]) { --bg:#14161a; --card:#1d2026; --fg:#e8eaee; --muted:#9aa1ad; --accent:#5b8cff; --border:#2c3038; --ok:#3ecf7a; --err:#ff6b6b; }
   }
+  :root[data-theme="dark"] { --bg:#14161a; --card:#1d2026; --fg:#e8eaee; --muted:#9aa1ad; --accent:#5b8cff; --border:#2c3038; --ok:#3ecf7a; --err:#ff6b6b; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
   main { max-width:720px; margin:0 auto; padding:32px 16px; }
   h1 { font-size:24px; margin:0 0 4px; }
   p.sub { color:var(--muted); margin:0 0 24px; }
+  fieldset { border:1px solid var(--border); border-radius:12px; background:var(--card); padding:12px 16px; margin:0 0 16px; }
+  legend { color:var(--muted); font-size:13px; padding:0 6px; }
+  .presets { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px 16px; }
+  .presets label { display:flex; align-items:center; gap:8px; cursor:pointer; }
   #drop { border:2px dashed var(--border); border-radius:12px; background:var(--card); padding:40px 16px; text-align:center; cursor:pointer; transition:.15s; }
   #drop.over { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, var(--card)); }
   #drop strong { color:var(--accent); }
-  .opts { display:flex; flex-wrap:wrap; gap:12px; margin:16px 0; }
-  .opts label { display:flex; flex-direction:column; font-size:13px; color:var(--muted); gap:4px; }
-  select { font:inherit; padding:6px 8px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--fg); }
-  ul { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
+  ul { list-style:none; padding:0; margin:16px 0 0; display:grid; gap:8px; }
   li { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px 14px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   li .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
   li .st { font-size:13px; color:var(--muted); }
   li .st.ok { color:var(--ok); } li .st.err { color:var(--err); }
-  a.btn { background:var(--accent); color:#fff; text-decoration:none; padding:6px 12px; border-radius:8px; font-size:14px; }
+  .variants { flex-basis:100%; display:grid; gap:6px; }
+  .variant { display:flex; align-items:center; gap:12px; border-top:1px solid var(--border); padding-top:6px; font-size:14px; }
+  .variant span { flex:1; color:var(--muted); }
+  button { font:inherit; font-size:14px; background:var(--accent); color:#fff; border:0; padding:6px 12px; border-radius:8px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
   input[type=file] { display:none; }
 </style>
 </head>
 <body>
 <main>
   <h1>Conversor para WAV</h1>
-  <p class="sub">MP3, M4A, AAC, OGG, OPUS, FLAC, WEBM, MP4 (áudio de vídeo) e tudo que o navegador decodificar. Sem limite de tamanho ou quantidade — tudo roda localmente, nada é enviado.</p>
+  <p class="sub">MP3, M4A, AAC, OGG, OPUS, FLAC, WEBM, MP4 (áudio de vídeo) e tudo que o navegador decodificar. Sem limite de tamanho ou quantidade — a conversão roda no seu dispositivo.</p>
 
-  <div class="opts">
-    <label>Taxa de amostragem
-      <select id="rate">
-        <option value="44100" selected>44.1 kHz</option>
-        <option value="48000">48 kHz</option>
-        <option value="88200">88.2 kHz</option>
-        <option value="96000">96 kHz</option>
-        <option value="22050">22.05 kHz</option>
-      </select>
-    </label>
-    <label>Profundidade
-      <select id="bits">
-        <option value="16" selected>16-bit PCM</option>
-        <option value="24">24-bit PCM</option>
-        <option value="32">32-bit float</option>
-      </select>
-    </label>
-    <label>Canais
-      <select id="chans">
-        <option value="0" selected>Original</option>
-        <option value="1">Mono</option>
-        <option value="2">Estéreo</option>
-      </select>
-    </label>
-  </div>
+  <fieldset>
+    <legend>Versões para gerar de cada arquivo</legend>
+    <div class="presets" id="presets"></div>
+  </fieldset>
 
   <div id="drop">Arraste arquivos aqui ou <strong>clique para escolher</strong></div>
   <input id="file" type="file" multiple accept="audio/*,video/*">
-  <p></p>
   <ul id="list"></ul>
 </main>
 
 <script>
+const PRESETS = [
+  { label: '16-bit · 44.1 kHz',        tag: '16bit-44k',      rate: 44100, bits: 16, ch: 0 },
+  { label: '16-bit · 48 kHz',          tag: '16bit-48k',      rate: 48000, bits: 16, ch: 0 },
+  { label: '24-bit · 48 kHz',          tag: '24bit-48k',      rate: 48000, bits: 24, ch: 0 },
+  { label: '24-bit · 96 kHz',          tag: '24bit-96k',      rate: 96000, bits: 24, ch: 0 },
+  { label: '32-bit float · 48 kHz',    tag: 'float-48k',      rate: 48000, bits: 32, ch: 0 },
+  { label: 'Mono · 16-bit · 44.1 kHz', tag: 'mono-16bit-44k', rate: 44100, bits: 16, ch: 1 },
+  { label: 'Mono · 16-bit · 22 kHz',   tag: 'mono-16bit-22k', rate: 22050, bits: 16, ch: 1 },
+];
+
+const presetsBox = document.getElementById('presets');
+PRESETS.forEach((p, i) => {
+  const l = document.createElement('label');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.value = i;
+  cb.checked = i === 0;
+  l.append(cb, p.label);
+  presetsBox.appendChild(l);
+});
+
 const drop = document.getElementById('drop');
 const input = document.getElementById('file');
 const list = document.getElementById('list');
@@ -84,40 +89,83 @@ function addFiles(files) {
     li.innerHTML = '<span class="name"></span><span class="st">Na fila…</span>';
     li.querySelector('.name').textContent = f.name;
     list.appendChild(li);
-    // um por vez para não estourar a memória com arquivos grandes
+    // um arquivo por vez para não estourar a memória com arquivos grandes
     queue = queue.then(() => convert(f, li));
   }
 }
 
 async function convert(file, li) {
   const st = li.querySelector('.st');
-  const rate = +document.getElementById('rate').value;
-  const bits = +document.getElementById('bits').value;
-  const wantCh = +document.getElementById('chans').value;
+  const chosen = [...presetsBox.querySelectorAll('input:checked')].map(cb => PRESETS[+cb.value]);
+  if (!chosen.length) { st.className = 'st err'; st.textContent = 'Escolha pelo menos uma versão'; return; }
+
   try {
+    st.className = 'st';
     st.textContent = 'Lendo…';
     const data = await file.arrayBuffer();
-    st.textContent = 'Decodificando…';
-    const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rate });
-    let buf;
-    try { buf = await ctx.decodeAudioData(data); } finally { ctx.close(); }
+    const decoded = new Map(); // taxa de amostragem -> AudioBuffer, decodificado uma vez por taxa
+    const out = document.createElement('div');
+    out.className = 'variants';
+    li.appendChild(out);
 
-    st.textContent = 'Gerando WAV…';
-    await new Promise(r => setTimeout(r));
-    const blob = encodeWav(buf, bits, wantCh);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.className = 'btn';
-    a.href = url;
-    a.download = file.name.replace(/\.[^.]+$/, '') + '.wav';
-    a.textContent = 'Baixar';
+    for (const p of chosen) {
+      if (!decoded.has(p.rate)) {
+        st.textContent = 'Decodificando…';
+        const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: p.rate });
+        try { decoded.set(p.rate, await ctx.decodeAudioData(data.slice(0))); } finally { ctx.close(); }
+      }
+      st.textContent = `Gerando ${p.label}…`;
+      await new Promise(r => setTimeout(r));
+      const blob = encodeWav(decoded.get(p.rate), p.bits, p.ch);
+      out.appendChild(variantRow(file, p, blob));
+    }
     st.className = 'st ok';
-    st.textContent = `${fmtTime(buf.duration)} · ${fmtSize(blob.size)}`;
-    li.appendChild(a);
-    a.click();
+    st.textContent = `${chosen.length} ${chosen.length > 1 ? 'versões prontas' : 'versão pronta'}`;
   } catch (e) {
     st.className = 'st err';
     st.textContent = 'Erro: formato não suportado pelo navegador (' + (e.message || e) + ')';
+  }
+}
+
+function variantRow(file, p, blob) {
+  const row = document.createElement('div');
+  row.className = 'variant';
+  const label = document.createElement('span');
+  label.textContent = `${p.label} · ${fmtSize(blob.size)}`;
+  const btn = document.createElement('button');
+  btn.textContent = 'Baixar';
+  const base = file.name.replace(/\.[^.]+$/, '').slice(0, 150);
+  const name = `${base} - ${p.tag}.wav`;
+  btn.onclick = () => save(name, blob, btn);
+  row.append(label, btn);
+  return row;
+}
+
+// Dentro do claude.ai usa o capability "downloads" (o viewer confirma);
+// abrindo o arquivo direto no navegador, baixa normalmente.
+async function save(name, blob, btn) {
+  const cl = window.claude;
+  if (!cl) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    return;
+  }
+  const dl = await cl.use('downloads').catch(() => null);
+  if (!dl) { btn.disabled = true; btn.textContent = 'Indisponível'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Salvando…';
+  try {
+    await dl.save({ filename: name, data: blob });
+    btn.textContent = 'Salvo';
+  } catch (e) {
+    btn.textContent = e.code === 'too_large' ? 'Grande demais' : e.code === 'declined' ? 'Baixar' : 'Não salvo';
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -129,7 +177,7 @@ function encodeWav(buf, bits, wantCh) {
   const bps = bits / 8;
   const isFloat = bits === 32;
   const dataBytes = len * ch * bps;
-  // RF64 seria necessário acima de 4 GB; WAV padrão vai até ~4 GB
+  // WAV padrão vai até ~4 GB
   if (dataBytes > 0xFFFFFFFF - 44) throw new Error('resultado passa de 4 GB (limite do formato WAV) — use 16-bit ou mono');
 
   const h = new DataView(new ArrayBuffer(44));
@@ -172,7 +220,6 @@ function encodeWav(buf, bits, wantCh) {
 }
 
 const fmtSize = b => b > 1e9 ? (b / 1e9).toFixed(2) + ' GB' : (b / 1e6).toFixed(1) + ' MB';
-const fmtTime = s => { s = Math.round(s); const m = Math.floor(s / 60); return `${Math.floor(m / 60) ? Math.floor(m / 60) + 'h ' : ''}${m % 60}min ${s % 60}s`; };
 </script>
 </body>
 </html>
