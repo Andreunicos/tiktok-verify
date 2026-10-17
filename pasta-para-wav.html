@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pasta para WAV</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1d22; --muted:#666c78; --accent:#2f6fed; --border:#dde1e7; --ok:#1f9d55; --err:#d64545; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1d2026; --fg:#e8eaee; --muted:#9aa1ad; --accent:#5b8cff; --border:#2c3038; --ok:#3ecf7a; --err:#ff6b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:32px 16px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  p.sub { color:var(--muted); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .row-ctrl { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  button { font:inherit; font-size:14px; background:var(--accent); color:#fff; border:0; padding:8px 14px; border-radius:8px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  select { font:inherit; padding:6px 8px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--fg); }
+  label.chk { display:flex; align-items:center; gap:6px; font-size:14px; }
+  #info { color:var(--muted); margin-top:12px; font-size:14px; }
+  #log { display:grid; gap:4px; margin-top:12px; font-size:13px; }
+  #log div { word-break:break-all; color:var(--muted); }
+  #log div.ok { color:var(--ok); }
+  #log div.err { color:var(--err); }
+  .warn { color:var(--err); font-size:13px; margin:10px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pasta para WAV</h1>
+  <p class="sub">Escolha uma pasta (ex.: <code>Downloads\Sons</code>). O conversor acha todos os áudios que não são WAV, inclusive nas subpastas, e cria o WAV ao lado de cada um. Precisa do Chrome ou Edge no computador.</p>
+
+  <div class="card">
+    <div class="row-ctrl">
+      <button id="pick">Escolher pasta…</button>
+      <label>Formato
+        <select id="preset">
+          <option value="0" selected>16-bit · 44.1 kHz</option>
+          <option value="1">16-bit · 48 kHz</option>
+          <option value="2">24-bit · 48 kHz</option>
+          <option value="3">Mono · 16-bit · 44.1 kHz</option>
+        </select>
+      </label>
+      <label class="chk"><input type="checkbox" id="del"> Apagar o original depois de converter</label>
+    </div>
+    <p class="warn" id="warn" hidden>Apagar o original tira o arquivo da pasta de vez. Só marque se já tiver cópia de segurança.</p>
+    <div id="info"></div>
+    <div class="row-ctrl" style="margin-top:12px">
+      <button id="go" disabled>Converter tudo</button>
+    </div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script>
+const PRESETS = [
+  { label: '16-bit · 44.1 kHz',        rate: 44100, bits: 16, ch: 0 },
+  { label: '16-bit · 48 kHz',          rate: 48000, bits: 16, ch: 0 },
+  { label: '24-bit · 48 kHz',          rate: 48000, bits: 24, ch: 0 },
+  { label: 'Mono · 16-bit · 44.1 kHz', rate: 44100, bits: 16, ch: 1 },
+];
+const AUDIO = /\.(mp3|m4a|aac|ogg|oga|opus|flac|webm|mp4|aif|aiff)$/i;
+const $ = id => document.getElementById(id);
+const pick = $('pick'), go = $('go'), log = $('log'), info = $('info'), del = $('del');
+let found = [];
+
+if (!window.showDirectoryPicker) {
+  pick.disabled = true;
+  info.textContent = 'Este navegador não suporta. Abra esta página no Chrome ou Edge.';
+}
+
+del.onchange = () => { $('warn').hidden = !del.checked; };
+
+pick.onclick = async () => {
+  let root;
+  try { root = await showDirectoryPicker({ mode: 'readwrite' }); } catch { return; } // usuário cancelou
+  found = [];
+  log.textContent = '';
+  info.textContent = 'Procurando…';
+  await scan(root, '', root);
+  info.textContent = `${root.name}: ${found.length} arquivo(s) de áudio que não são WAV`;
+  go.disabled = !found.length;
+};
+
+// acha arquivos recursivamente; guarda a pasta de cada um para criar o WAV ao lado
+async function scan(dir, path, root) {
+  for await (const h of dir.values()) {
+    if (h.kind === 'directory') await scan(h, path + h.name + '/', root);
+    else if (AUDIO.test(h.name)) found.push({ dir, handle: h, path: path + h.name });
+  }
+}
+
+go.onclick = async () => {
+  const p = PRESETS[+$('preset').value];
+  const apagar = del.checked;
+  const msg = `Converter ${found.length} arquivo(s) para WAV (${p.label})` + (apagar ? ' e APAGAR os originais' : '') + '?';
+  if (!confirm(msg)) return;
+
+  go.disabled = pick.disabled = true;
+  log.textContent = '';
+  const list = found;
+  found = [];
+  for (const f of list) await process(f, p, apagar);
+  info.textContent = 'Pronto.';
+  pick.disabled = false;
+};
+
+async function process(f, p, apagar) {
+  const row = document.createElement('div');
+  row.textContent = f.path + ' — convertendo…';
+  log.appendChild(row);
+  const set = (text, cls = '') => { row.className = cls; row.textContent = f.path + ' — ' + text; };
+
+  try {
+    const wavName = f.handle.name.replace(/\.[^.]+$/, '') + '.wav';
+    if (await exists(f.dir, wavName)) return set('já existe um WAV com esse nome, pulado');
+
+    const data = await (await f.handle.getFile()).arrayBuffer();
+    const ctx = new AudioContext({ sampleRate: p.rate });
+    let buf;
+    try { buf = await ctx.decodeAudioData(data); } finally { ctx.close(); }
+
+    const blob = encodeWav(buf, p.bits, p.ch);
+    const w = await (await f.dir.getFileHandle(wavName, { create: true })).createWritable();
+    await w.write(blob);
+    await w.close(); // só apaga o original depois que o WAV foi gravado por completo
+    if (apagar) await f.dir.removeEntry(f.handle.name);
+    set(`OK → ${wavName} (${fmtSize(blob.size)})` + (apagar ? ', original apagado' : ''), 'ok');
+  } catch (e) {
+    set('erro: ' + (e.message || e), 'err');
+  }
+}
+
+async function exists(dir, name) {
+  try { await dir.getFileHandle(name); return true; } catch { return false; }
+}
+
+// Monta o WAV em pedaços para não precisar de um único ArrayBuffer gigante
+function encodeWav(buf, bits, wantCh) {
+  const srcCh = buf.numberOfChannels;
+  const ch = wantCh || srcCh;
+  const len = buf.length;
+  const bps = bits / 8;
+  const isFloat = bits === 32;
+  const dataBytes = len * ch * bps;
+  if (dataBytes > 0xFFFFFFFF - 44) throw new Error('resultado passa de 4 GB (limite do WAV)');
+
+  const h = new DataView(new ArrayBuffer(44));
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) h.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); h.setUint32(4, 36 + dataBytes, true); str(8, 'WAVE');
+  str(12, 'fmt '); h.setUint32(16, 16, true); h.setUint16(20, isFloat ? 3 : 1, true);
+  h.setUint16(22, ch, true); h.setUint32(24, buf.sampleRate, true);
+  h.setUint32(28, buf.sampleRate * ch * bps, true); h.setUint16(32, ch * bps, true);
+  h.setUint16(34, bits, true); str(36, 'data'); h.setUint32(40, dataBytes, true);
+
+  const src = [];
+  for (let c = 0; c < srcCh; c++) src.push(buf.getChannelData(c));
+  const sample = (c, i) => {
+    if (ch === srcCh) return src[c][i];
+    if (ch === 1) { let s = 0; for (let k = 0; k < srcCh; k++) s += src[k][i]; return s / srcCh; }
+    return src[Math.min(c, srcCh - 1)][i]; // mono -> estéreo
+  };
+
+  const parts = [h.buffer];
+  const CHUNK = 1 << 18;
+  for (let start = 0; start < len; start += CHUNK) {
+    const n = Math.min(CHUNK, len - start);
+    const dv = new DataView(new ArrayBuffer(n * ch * bps));
+    let o = 0;
+    for (let i = start; i < start + n; i++) {
+      for (let c = 0; c < ch; c++) {
+        let s = sample(c, i);
+        if (isFloat) { dv.setFloat32(o, s, true); o += 4; continue; }
+        s = s < -1 ? -1 : s > 1 ? 1 : s;
+        if (bits === 16) { dv.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true); o += 2; }
+        else {
+          const v = Math.round(s < 0 ? s * 0x800000 : s * 0x7FFFFF);
+          dv.setUint8(o, v & 255); dv.setUint8(o + 1, (v >> 8) & 255); dv.setUint8(o + 2, (v >> 16) & 255); o += 3;
+        }
+      }
+    }
+    parts.push(dv.buffer);
+  }
+  return new Blob(parts, { type: 'audio/wav' });
+}
+
+const fmtSize = b => b > 1e9 ? (b / 1e9).toFixed(2) + ' GB' : (b / 1e6).toFixed(1) + ' MB';
+</script>
+</body>
+</html>
